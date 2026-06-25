@@ -442,12 +442,21 @@ Namespace `observational-memory` under `~/.pi/agent/settings.json` and project
 8. `/om:status`, `/om:compact`.
 9. Acceptance: long session, parallel observers, compaction, `/tree` rollback.
 
-**Phase B**
-10. `.memory/` paths + atomic write + INDEX render.
-11. Consolidator agent (scoped read/write/edit + `report_promotions`).
-12. Consolidator trigger (pool clock, one-at-a-time, oldest-first, tombstone reported).
-13. Memory-map section in the injection block + post-consolidation INDEX re-render.
-14. Acceptance: bounded buffer, clean topic files, cross-session read, `/tree` semantics.
+**Phase B** — implemented
+10. ✅ `.memory/` paths + atomic write + INDEX render (`src/memory/{paths,index-render}.ts`).
+11. ✅ Consolidator agent: scoped `read/write/edit/ls/grep` + `report_promotions`
+    (`agent/consolidator/{prompt,tools}.ts`).
+12. ✅ Consolidator trigger: pool clock, one-at-a-time, oldest-first, tombstone only the
+    reported∩provided∩still-active timestamps; drop `coversUpToId` = tip's last source entry
+    (`src/hooks/consolidator-trigger.ts`).
+13. ✅ Memory-map section in the injection block (live from disk at compaction) +
+    post-consolidation INDEX.md re-render. `/om:consolidate` + extended `/om:status`.
+14. Acceptance (manual): bounded buffer, clean topic files, cross-session read, `/tree` semantics.
+
+Resolved Phase-B decisions: promote-all expected (report-back is the race-safety handoff);
+the orchestrator owns INDEX.md (consolidator never writes it); consolidator authors full
+front-matter using an injected current-time; runs in the background concurrent with observers
+(compaction never waits for it).
 
 ---
 
