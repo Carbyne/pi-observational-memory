@@ -384,6 +384,42 @@ Goal: bound the buffer and gain durable, navigable, cross-session topic files.
 - INDEX.md on disk is (re)rendered by the orchestrator after each consolidation so live
   `ls`/`grep` truth leads the pushed map (design risk 3 — accepted).
 
+### B5b. Project journey (`JOURNEY.md`) — running descriptive history [implemented]
+
+A third long-term artifact alongside the topic files and INDEX: a single, whole-project,
+free-form prose narrative of **how the project/work got to where it is**. Purpose is
+**orientation only** — give a freshly-compacted agent the rough arc so it stays on track —
+not detailed recall (the topic files hold detail).
+
+- **File:** `.memory/JOURNEY.md`. Consolidator-authored plain markdown, **no front-matter**.
+  A special file like INDEX.md: **excluded** from `listTopics`/the memory map, never a topic.
+- **Tier rules:** same as topic files — file-backed, shared across sessions, does **not** roll
+  back under `/tree`.
+- **Pushed, not pull-only:** rendered **verbatim from disk** into the compaction block as a
+  new first section (`## Journey`), before the memory map and observations. So post-compaction
+  the agent sees `journey` (settled past) → `map` (current topics) → `observations` (recent) →
+  verbatim tail. Model-free at compaction (stays a throwaway render of a durable file).
+- **Writer & cadence:** the **consolidator**, once per consolidation run. The current journey
+  text is injected into its `-p` prompt (like the INDEX); it rewrites the file with its scoped
+  `write` tool. It narrates the arc of the **promoted (aging-out) batch**, so the journey
+  trails the live buffer by ~`poolTargetTokens` — a clean, non-overlapping chronology.
+- **Append-mostly + compress-tail (the buffer insight, one tier up):** each run appends one
+  short dated segment and leaves recent segments intact; only when the file exceeds
+  `journeyTargetTokens` does it **compress the oldest segments** into a tighter lead summary.
+  Recent history stays detailed; the distant past decays gracefully. Bounds the pushed section.
+- **Anti-steering (load-bearing prompt constraint):** strictly past-tense descriptive. **No**
+  recommendations, next steps, TODOs, plans, advice, predictions, or evaluative judgement —
+  enforced entirely in the consolidator system prompt. The block header also tells the reader
+  it is orientation, not instruction.
+
+> **Deliberate exception to Core Stance 5.** The journey is the *one* intentionally
+> **cumulative** artifact — no actor ever sees the whole history, so the consolidator can only
+> maintain it incrementally (the `MEMORY.md` decay mode the rest of the design avoids). Accepted
+> because it is **low-stakes orientation, not recall**: decay is confined to the compressed
+> distant-past tail, recent history stays faithful, and the durable truth still lives in the
+> worker session recordings + topic files. If this ever needs to be lossless, the critic tier /
+> git-versioned `.memory` are the future guards (already on the post-v1 list).
+
 ### B5. Phase B acceptance
 - Buffer stays bounded near `poolTargetTokens`; consolidation drains overflow into topic files.
 - Topic files are clean current-state prose; rewrites are atomic; master can `grep` them.
@@ -406,6 +442,7 @@ Namespace `observational-memory` under `~/.pi/agent/settings.json` and project
   "consolidateAtPoolTokens": 20000,     // Phase B (200% of target)
   "compactAtContextTokens": 100000,     // tune per model
   "tailTokens": 20000,                  // verbatim tail; snaps to chunk boundary
+  "journeyTargetTokens": 1000,          // Phase B — pushed JOURNEY.md size; compress old tail past this
   "observerConcurrency": 4,
   "models": {
     "observer":     { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "low" },
@@ -428,7 +465,7 @@ Namespace `observational-memory` under `~/.pi/agent/settings.json` and project
 | R2 just-promoted blind spot | INDEX summary quality is load-bearing; conservative routing + good front-matter. |
 | R3 INDEX staleness | Master reads live FS; orchestrator re-renders INDEX.md post-consolidation. |
 | R4 observer/consolidator concurrency | One consolidator at a time; tombstone the handed batch ∩ still-active (no report-back) — a during-run observation isn't in the batch, so never tombstoned. Enforced in `consolidator-trigger.ts`. |
-| R5 compaction stalls on slow worker | Wait only for in-flight **observers** before compaction; measure; accepted. |
+| R5 compaction stalls on slow worker | Wait only for in-flight **observers** (not consolidators). **Fast path:** skip the wait entirely when no in-flight observer can affect the block (`canSkipObserverWait`) — each in-flight observer's chunk ends after the cutoff (excluded from the projection) **and** the snapped tail is already ≤ `tailTokens` (snap is provably stable). In the steady state observers cover only tail chunks, so compaction is instant; it only blocks for a genuinely pre-cutoff slow observer (out-of-order completion). |
 | R6 `--no-builtin-tools` + consolidator | Consolidator extension registers its own `.memory/`-scoped read/write/edit. |
 | R7 timestamp-id reliability | Resolved by L5: orchestrator assigns ids; observer emits minute-resolution only. |
 
