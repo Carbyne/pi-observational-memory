@@ -524,3 +524,30 @@ front-matter using an injected current-time; runs in the background concurrent w
 Critic/verification tier · git-versioned `.memory` · conscious "jot" write path / scratchpad
 · drill-to-source consolidation · `.memory/.runs` GC · per-position `/tree` correctness for
 long-term memory · multi-agent `.memory` sharing/merge.
+
+---
+
+## Addendum — per-session memory scoping (post-v1)
+
+Long-term memory is now scoped per session: everything that used to live flat under
+`<project>/.memory/` (`INDEX.md`, `<topic>.md`, `JOURNEY.md`, and `.runs/`) now lives under
+`<project>/.memory/<sessionId>/`. The key is the **immutable session-header id**
+(`sessionManager.getSessionId()`), which survives `/name`, `/resume`, and `/tree` — never the
+session filename UUID (can diverge) or display name (mutated by `/name`).
+
+- **Why:** two sessions in the same directory were sharing (and clobbering) one consolidator
+  output. Scoping by session id isolates them.
+- **Fork/clone seeding:** the short-term ledger already travels with a fork, so the long-term
+  tier is seeded to match. `ensureSessionMemory` (src/memory/session.ts) copies the parent's
+  memory root in **once, on first touch** (parent discovered via the durable `parentSession`
+  header lineage), excluding transient `.runs/`. Idempotent: an existing root is never
+  re-seeded, so `/resume` and `/tree` never disturb it. No parent ⇒ lazy create on first write.
+- **Mechanics:** `sessionMemoryRoot(cwd, sessionId)` is the chokepoint; all path helpers
+  (`indexPath`/`journeyPath`/`readJourney`/`listTopics`/`resolveWithinMemory`, `run*Path`) take
+  the resolved **root**. The orchestrator stores it on `runtime.memoryRoot` (set whenever the
+  gate is enabled) and passes the worker its session dir via `OM_MEMORY_DIR`. The worker /
+  agent side is unchanged — it only ever receives explicit paths.
+- **Memory-map paths** advertised to the master are rendered relative to the project cwd
+  (`.memory/<sessionId>/<topic>.md`) so its `read`/`grep` resolve to the right session dir.
+- **Not migrated:** pre-existing flat `.memory/*` content is left in place and ignored (clean
+  break). `/tree` correctness for the long-term tier is still out of scope (now per-session).
