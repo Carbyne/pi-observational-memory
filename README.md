@@ -4,6 +4,21 @@ Tiered, subprocess-backed memory for pi.
 
 Parallel **observers** distill raw conversation chunks into atomic observations committed to the master's branch-local **ledger** (so memory stays correct under `/tree`); a deterministic, model-free **compaction** renders that buffer verbatim into the compaction block. A **consolidator** promotes the oldest observations into durable `.memory/<sessionId>/` topic files, bounding the buffer and giving each session its own durable, `grep`-able long-term memory (a fork seeds its memory from its parent).
 
+## Installation
+
+Install from this repository with pi's package manager:
+
+```bash
+pi install git:github.com/amosblomqvist/pi-observational-memory
+```
+
+- Add `-l` to install project-local instead of globally (writes to `.pi/settings.json`):
+  `pi install git:github.com/amosblomqvist/pi-observational-memory -l`
+- Pin a tag or commit with `@<ref>`: `pi install git:github.com/amosblomqvist/pi-observational-memory@v1`
+- Remove with `pi remove git:github.com/amosblomqvist/pi-observational-memory`
+
+The extension is **off by default** after install — turn it on per session with `/om` (see below).
+
 ## On/off gate (default OFF)
 
 The extension ships in the global extensions folder during development, so it is **gated off
