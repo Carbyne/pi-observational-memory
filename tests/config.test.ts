@@ -31,22 +31,25 @@ describe("normalizeSettingsConfig: workerExtensions", () => {
 });
 
 describe("normalizeSettingsConfig: models", () => {
-	it("merges partial model entries over the defaults", () => {
+	it("takes the full model name verbatim", () => {
 		const normalized = normalizeSettingsConfig(
-			{
-				models: {
-					observer: { provider: "yoda", id: "qwen3.8-27b" },
-					consolidator: { id: "qwen3.8-27b" },
-				},
-			},
+			{ models: { observer: { model: "yoda/qwen3.8-27b" } } },
 			DEFAULTS,
 		);
-		expect(normalized.models?.observer).toEqual({ provider: "yoda", id: "qwen3.8-27b", thinking: "low" });
-		// consolidator keeps the default provider, takes the new id, keeps the default thinking.
-		expect(normalized.models?.consolidator).toEqual({
-			provider: DEFAULTS.models.consolidator.provider,
-			id: "qwen3.8-27b",
-			thinking: "medium",
-		});
+		expect(normalized.models?.observer).toEqual({ model: "yoda/qwen3.8-27b", thinking: "low" });
+	});
+
+	it("falls back to legacy provider/id concatenation", () => {
+		const normalized = normalizeSettingsConfig(
+			{ models: { observer: { provider: "openrouter", id: "z-ai/glm-5.3" } } },
+			DEFAULTS,
+		);
+		expect(normalized.models?.observer?.model).toBe("openrouter/z-ai/glm-5.3");
+	});
+
+	it("keeps the default model when nothing is given", () => {
+		const normalized = normalizeSettingsConfig({}, DEFAULTS);
+		expect(normalized.models).toBeUndefined();
+		expect(DEFAULTS.models.observer.model).toBe("openrouter/z-ai/glm-5.3");
 	});
 });

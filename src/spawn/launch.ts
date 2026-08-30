@@ -18,7 +18,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const AGENT_EXTENSION_PATH = join(REPO_ROOT, "agent", "index.ts");
 
 export function modelArg(model: ConfiguredModel): string {
-	return `${model.provider}/${model.id}`;
+	return model.model;
 }
 
 /** Resolve the `pi` entry point (subagents' trick), falling back to `pi` on PATH. */

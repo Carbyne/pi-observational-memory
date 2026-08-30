@@ -126,8 +126,8 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "journeyTargetTokens": 1000,         // pushed JOURNEY.md size; compress oldest segments past this
     "observerConcurrency": 4,
     "models": {
-      "observer":     { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "low" },
-      "consolidator": { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "medium" }
+      "observer":     { "model": "anthropic/claude-sonnet-4-6", "thinking": "low" },
+      "consolidator": { "model": "anthropic/claude-sonnet-4-6", "thinking": "medium" }
     },
     "workerExtensions": [],
     "passive": false,
@@ -146,13 +146,17 @@ for corporate gateways — that extension must be listed here or the worker fail
 {
   "observational-memory": {
     "models": {
-      "observer":     { "provider": "yoda", "id": "qwen3.8-27b", "thinking": "low" },
-      "consolidator": { "provider": "yoda", "id": "qwen3.8-27b", "thinking": "medium" }
+      "observer":     { "model": "yoda/qwen3.8-27b", "thinking": "low" },
+      "consolidator": { "model": "yoda/qwen3.8-27b", "thinking": "medium" }
     },
     "workerExtensions": ["~/.pi/agent/git/github.com/Carbyne/pi-gateway-discovery/src/index.ts"]
   }
 }
 ```
+
+`model` is the full model name — the exact value pi's `--model` flag takes (see
+`pi --list-models`). The legacy `{ "provider": ..., "id": ... }` shape is still accepted
+and is concatenated into `provider/id`.
 
 `PI_OM_PASSIVE=1` forces `passive` (disables all triggers) for clean `/tree` testing.
 `passive` is a power-user setting distinct from the on/off gate.

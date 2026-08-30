@@ -5,8 +5,12 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface ConfiguredModel {
-	provider: string;
-	id: string;
+	/** Full model name — passed verbatim as pi's `--model` value (e.g. `yoda/qwen3.8-27b`). */
+	model: string;
+	/** Legacy: provider prefix, used only to build `model` when it is not given. */
+	provider?: string;
+	/** Legacy: model id, used only to build `model` when it is not given. */
+	id?: string;
 	thinking?: ModelThinkingLevel;
 }
 
@@ -66,8 +70,8 @@ export const DEFAULTS: Config = {
 	resumeAfterMidRunCompaction: true,
 	workerExtensions: [],
 	models: {
-		observer: { provider: "openrouter", id: "z-ai/glm-5.3", thinking: "low" },
-		consolidator: { provider: "openrouter", id: "z-ai/glm-5.3", thinking: "medium" },
+		observer: { model: "openrouter/z-ai/glm-5.3", thinking: "low" },
+		consolidator: { model: "openrouter/z-ai/glm-5.3", thinking: "medium" },
 	},
 	passive: false,
 	debugLog: false,
@@ -101,9 +105,19 @@ function expandHome(path: string): string {
 
 function normalizeModel(value: unknown, fallback: ConfiguredModel): ConfiguredModel {
 	if (!isRecord(value)) return fallback;
-	const provider = nonEmptyString(value.provider) ?? fallback.provider;
-	const id = nonEmptyString(value.id) ?? fallback.id;
-	const model: ConfiguredModel = { provider, id };
+	const model: ConfiguredModel = { model: "" };
+	const full = nonEmptyString(value.model);
+	if (full) {
+		// Full model name, verbatim — pi's --model takes it as-is.
+		model.model = full;
+	} else {
+		// Legacy { provider, id } shape: concatenated into a full model name.
+		const provider = nonEmptyString(value.provider) ?? fallback.provider;
+		const id = nonEmptyString(value.id) ?? fallback.id;
+		model.model = `${provider}/${id}`;
+		model.provider = provider;
+		model.id = id;
+	}
 	const thinking = isThinkingLevel(value.thinking) ? value.thinking : fallback.thinking;
 	if (thinking) model.thinking = thinking;
 	return model;

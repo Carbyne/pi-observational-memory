@@ -15,7 +15,7 @@ import {
 import { registerObserverTool } from "../agent/observer/tool.js";
 
 describe("launch argv + env", () => {
-	const model = { provider: "anthropic" as const, id: "claude-sonnet-4-6", thinking: "low" as const };
+	const model = { model: "anthropic/claude-sonnet-4-6", thinking: "low" as const };
 
 	it("builds the headless yt-edit-style flag set", () => {
 		const argv = buildWorkerArgv({ model, sessionName: "om-observer-x", kickoffPromptPath: "/tmp/run.prompt.md" });
@@ -35,7 +35,7 @@ describe("launch argv + env", () => {
 
 	it("omits --thinking when no level is configured", () => {
 		const argv = buildWorkerArgv({
-			model: { provider: "x", id: "y" },
+			model: { model: "x/y" },
 			sessionName: "n",
 			kickoffPromptPath: "/tmp/prompt",
 		});
@@ -61,7 +61,7 @@ describe("launch argv + env", () => {
 		expect(argv[argv.indexOf("-e") + 1]).toBe(AGENT_EXTENSION_PATH);
 	});
 
-	it("formats the model arg as provider/id", () => {
+	it("passes the full model name through verbatim", () => {
 		expect(modelArg(model)).toBe("anthropic/claude-sonnet-4-6");
 	});
 
