@@ -42,6 +42,12 @@ export function buildWorkerArgv(opts: {
 	sessionName: string;
 	kickoffPromptPath: string;
 	agentExtensionPath?: string;
+	/**
+	 * Extra extension files loaded into the worker via `-e` (e.g. a model-provider gateway
+	 * extension). Workers run with `--no-extensions`, so any provider the worker model comes
+	 * from must be loaded explicitly here or pi fails with "Model not found".
+	 */
+	extraExtensionPaths?: string[];
 }): string[] {
 	const pi = resolvePiBinary();
 	const args = [
@@ -55,6 +61,8 @@ export function buildWorkerArgv(opts: {
 		modelArg(opts.model),
 	];
 	if (opts.model.thinking) args.push("--thinking", opts.model.thinking);
+	// Provider-registering extensions first, then the worker's own role extension.
+	for (const path of opts.extraExtensionPaths ?? []) args.push("-e", path);
 	args.push("-e", opts.agentExtensionPath ?? AGENT_EXTENSION_PATH);
 	args.push("-n", opts.sessionName);
 	// `-p` is a boolean flag when followed by an @file argument. Pi reads the prompt from disk,

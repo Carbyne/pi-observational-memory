@@ -129,8 +129,27 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
       "observer":     { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "low" },
       "consolidator": { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "medium" }
     },
+    "workerExtensions": [],
     "passive": false,
     "debugLog": false
+  }
+}
+```
+
+`workerExtensions` lists extra extension files loaded into every worker subprocess via `-e`
+(in addition to the shared worker extension). Workers run with `--no-extensions`, so when a
+worker model comes from a provider registered by an extension — e.g. `pi-gateway-discovery`
+for corporate gateways — that extension must be listed here or the worker fails with
+`Model "..." not found`:
+
+```jsonc
+{
+  "observational-memory": {
+    "models": {
+      "observer":     { "provider": "yoda", "id": "qwen3.8-27b", "thinking": "low" },
+      "consolidator": { "provider": "yoda", "id": "qwen3.8-27b", "thinking": "medium" }
+    },
+    "workerExtensions": ["~/.pi/agent/git/github.com/Carbyne/pi-gateway-discovery/src/index.ts"]
   }
 }
 ```

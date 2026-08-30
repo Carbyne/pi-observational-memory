@@ -157,6 +157,7 @@ async function dispatchObserver(
 			model: runtime.config.models.observer,
 			sessionName: `om-observer-${runId}`,
 			kickoffPromptPath: promptPath,
+			extraExtensionPaths: runtime.config.workerExtensions,
 		});
 		const env = buildWorkerEnv("observer", { memoryRoot: runtime.memoryRoot, runId });
 		const exit = await spawnWorker({ argv, cwd: runtime.memoryRoot, env, signal: controller.signal });

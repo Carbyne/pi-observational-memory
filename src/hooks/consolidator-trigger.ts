@@ -118,6 +118,7 @@ async function dispatchConsolidator(
 			model: runtime.config.models.consolidator,
 			sessionName: `om-consolidator-${runId}`,
 			kickoffPromptPath: promptPath,
+			extraExtensionPaths: runtime.config.workerExtensions,
 		});
 		const env = buildWorkerEnv("consolidator", { memoryRoot: runtime.memoryRoot, runId });
 		const exit = await spawnWorker({ argv, cwd: runtime.memoryRoot, env, signal: controller.signal });

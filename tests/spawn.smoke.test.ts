@@ -42,6 +42,25 @@ describe("launch argv + env", () => {
 		expect(argv).not.toContain("--thinking");
 	});
 
+	it("loads extra extension paths before the worker's own extension", () => {
+		const argv = buildWorkerArgv({
+			model,
+			sessionName: "om-observer-x",
+			kickoffPromptPath: "/tmp/run.prompt.md",
+			extraExtensionPaths: ["/gw/src/index.ts"],
+		});
+		const eFlags = argv.filter((a) => a === "-e");
+		expect(eFlags).toHaveLength(2);
+		expect(argv[argv.indexOf("-e") + 1]).toBe("/gw/src/index.ts");
+		expect(argv[argv.lastIndexOf("-e") + 1]).toBe(AGENT_EXTENSION_PATH);
+	});
+
+	it("loads no extra extensions by default", () => {
+		const argv = buildWorkerArgv({ model, sessionName: "om-observer-x", kickoffPromptPath: "/tmp/run.prompt.md" });
+		expect(argv.filter((a) => a === "-e")).toHaveLength(1);
+		expect(argv[argv.indexOf("-e") + 1]).toBe(AGENT_EXTENSION_PATH);
+	});
+
 	it("formats the model arg as provider/id", () => {
 		expect(modelArg(model)).toBe("anthropic/claude-sonnet-4-6");
 	});

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -35,6 +36,13 @@ export interface Config {
 		consolidator: ConfiguredModel;
 	};
 	/**
+	 * Extra extension files loaded into every worker subprocess via `-e` (in addition to the
+	 * shared worker extension). Needed when worker models come from a provider registered by an
+	 * extension (e.g. pi-gateway-discovery): workers run with `--no-extensions`, so such
+	 * providers would otherwise be unresolvable and the spawn would fail with "Model not found".
+	 */
+	workerExtensions: string[];
+	/**
 	 * Resume the agent automatically after a compaction that fired mid-run (a `turn_end` with
 	 * pending tool work). A `turn_end` that is also the run's terminal turn never auto-resumes —
 	 * it stops as if nothing happened. Default true.
@@ -56,6 +64,7 @@ export const DEFAULTS: Config = {
 	journeyTargetTokens: 1_000,
 	observerConcurrency: 4,
 	resumeAfterMidRunCompaction: true,
+	workerExtensions: [],
 	models: {
 		observer: { provider: "openrouter", id: "z-ai/glm-5.3", thinking: "low" },
 		consolidator: { provider: "openrouter", id: "z-ai/glm-5.3", thinking: "medium" },
@@ -85,6 +94,11 @@ function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/** Expand a leading `~` to the home dir so settings can use `~/...` extension paths. */
+function expandHome(path: string): string {
+	return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+}
+
 function normalizeModel(value: unknown, fallback: ConfiguredModel): ConfiguredModel {
 	if (!isRecord(value)) return fallback;
 	const provider = nonEmptyString(value.provider) ?? fallback.provider;
@@ -95,7 +109,7 @@ function normalizeModel(value: unknown, fallback: ConfiguredModel): ConfiguredMo
 	return model;
 }
 
-function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): Partial<Config> {
+export function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): Partial<Config> {
 	const normalized: Partial<Config> = {};
 	const numberKeys = [
 		"chunkTokens",
@@ -117,6 +131,11 @@ function normalizeSettingsConfig(value: Record<string, unknown>, base: Config): 
 		normalized.resumeAfterMidRunCompaction = value.resumeAfterMidRunCompaction;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
+	if (Array.isArray(value.workerExtensions)) {
+		normalized.workerExtensions = value.workerExtensions
+			.filter((p): p is string => typeof p === "string" && p.length > 0)
+			.map(expandHome);
+	}
 	if (isRecord(value.models)) {
 		normalized.models = {
 			observer: normalizeModel(value.models.observer, base.models.observer),
