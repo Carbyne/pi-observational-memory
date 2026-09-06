@@ -140,3 +140,48 @@ describe("spawnWorker: watchdog kills", () => {
 		expect(readFileSync(logPath, "utf-8")).not.toContain("om watchdog");
 	});
 });
+
+describe("spawnWorker: progress-idle (heartbeat-file liveness)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "om-prog-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("kills a run that never heartbeats (progress file never created)", async () => {
+		const started = Date.now();
+		const exit = await spawnWorker({
+			argv: child(`setTimeout(() => {}, 1e7)`), // alive, silent, no heartbeat
+			cwd: dir,
+			env: BASE_ENV,
+			timeoutMs: 0,
+			idleTimeoutMs: 0,
+			progressPath: join(dir, "obs-prog.progress"),
+			progressIdleMs: 250,
+		});
+		expect(exit.timeout).toBe("progress");
+		expect(Date.now() - started).toBeLessThan(5000);
+	}, 10_000);
+
+	it("does NOT kill a run that keeps advancing its heartbeat file", async () => {
+		const progressPath = join(dir, "obs-alive.progress");
+		// The child stands in for the worker extension: create + keep re-touching the heartbeat file.
+		const exit = await spawnWorker({
+			argv: child(
+				`const fs=require("fs");const p=process.env.OM_P;fs.writeFileSync(p,"x");` +
+					`const t=setInterval(() => fs.utimesSync(p,new Date,new Date),80);` +
+					`setTimeout(() => { clearInterval(t); }, 600)`,
+			),
+			cwd: dir,
+			env: { ...BASE_ENV, OM_P: progressPath } as NodeJS.ProcessEnv,
+			timeoutMs: 0,
+			idleTimeoutMs: 0,
+			progressPath,
+			progressIdleMs: 250,
+		});
+		expect(exit.timeout).toBeUndefined();
+		expect(exit.code).toBe(0);
+	}, 10_000);
+});

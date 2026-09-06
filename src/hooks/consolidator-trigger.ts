@@ -31,8 +31,9 @@ import { nowTimestamp } from "../ledger/serialize.js";
 import { renderIndexFile } from "../memory/index-render.js";
 import { atomicWrite, indexPath, listTopics, readJourney } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
-import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js";
-import { runPromptPath, runLogPath, writeWorkerPrompt } from "../spawn/runs.js";
+import { buildWorkerArgv, buildWorkerEnv } from "../spawn/launch.js";
+import { runWorker, timeoutMessage, workerDoomConfig } from "../spawn/run-worker.js";
+import { runPromptPath, runLogPath, runProgressPath, writeWorkerPrompt } from "../spawn/runs.js";
 import { recordWorkerCost } from "./observer-trigger.js";
 
 type TriggerCtx = {
@@ -131,28 +132,38 @@ async function dispatchConsolidator(
 			kickoffPromptPath: promptPath,
 			extraExtensionPaths: runtime.config.workerExtensions,
 		});
-		const env = buildWorkerEnv("consolidator", { memoryRoot: runtime.memoryRoot, runId });
-		const exit = await spawnWorker({
+		const env = buildWorkerEnv("consolidator", {
+			memoryRoot: runtime.memoryRoot,
+			runId,
+			doom: workerDoomConfig(runtime.config),
+		});
+		const { exit, doomReason, attempts } = await runWorker({
 			argv,
 			cwd: runtime.memoryRoot,
 			env,
 			signal: controller.signal,
+			memoryRoot: runtime.memoryRoot,
+			runId,
 			logPath,
+			progressPath: runProgressPath(runtime.memoryRoot, runId),
 			timeoutMs: runtime.config.workerTimeoutMs,
 			idleTimeoutMs: runtime.config.workerIdleTimeoutMs,
+			progressIdleMs: runtime.config.workerProgressIdleTimeoutMs,
+			retries: runtime.config.workerRetries,
+			retryBackoffMs: runtime.config.workerRetryBackoffMs,
 		});
+		const attemptNote = attempts > 1 ? ` after ${attempts} attempts` : "";
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "consolidator", runId);
 		if (exit.timeout) {
-			throw new Error(
-				exit.timeout === "wall"
-					? `consolidator timed out after ${Math.round(runtime.config.workerTimeoutMs / 1000)}s (possible tool-call loop; see ${logPath})`
-					: `consolidator idle-timed out after ${Math.round(runtime.config.workerIdleTimeoutMs / 1000)}s with no output (stalled provider? see ${logPath})`,
-			);
+			throw new Error(timeoutMessage("consolidator", exit.timeout, runtime.config, logPath) + attemptNote);
+		}
+		if (doomReason !== undefined) {
+			throw new Error(`consolidator aborted by doom guard: ${doomReason}${attemptNote} (log: ${logPath})`);
 		}
 		if (exit.code !== 0) {
 			throw new Error(
-				`consolidator exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""} (log: ${logPath})`,
+				`consolidator exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""}${attemptNote} (log: ${logPath})`,
 			);
 		}
 

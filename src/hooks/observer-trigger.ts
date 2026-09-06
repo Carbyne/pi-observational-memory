@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { assignObservationTimestamps } from "../ids.js";
 import {
 	entryIndexForId,
@@ -14,12 +15,14 @@ import {
 	type SourceSlice,
 } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
-import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js";
+import { buildWorkerArgv, buildWorkerEnv } from "../spawn/launch.js";
+import { runWorker, timeoutMessage, workerDoomConfig } from "../spawn/run-worker.js";
 import {
 	readObserverResult,
 	readWorkerCost,
 	runCostPath,
 	runLogPath,
+	runProgressPath,
 	runPromptPath,
 	runResultPath,
 	writeWorkerPrompt,
@@ -161,28 +164,39 @@ async function dispatchObserver(
 			kickoffPromptPath: promptPath,
 			extraExtensionPaths: runtime.config.workerExtensions,
 		});
-		const env = buildWorkerEnv("observer", { memoryRoot: runtime.memoryRoot, runId });
-		const exit = await spawnWorker({
+		const env = buildWorkerEnv("observer", {
+			memoryRoot: runtime.memoryRoot,
+			runId,
+			doom: workerDoomConfig(runtime.config),
+		});
+		const { exit, doomReason, attempts } = await runWorker({
 			argv,
 			cwd: runtime.memoryRoot,
 			env,
 			signal: controller.signal,
+			memoryRoot: runtime.memoryRoot,
+			runId,
 			logPath,
+			progressPath: runProgressPath(runtime.memoryRoot, runId),
 			timeoutMs: runtime.config.workerTimeoutMs,
 			idleTimeoutMs: runtime.config.workerIdleTimeoutMs,
+			progressIdleMs: runtime.config.workerProgressIdleTimeoutMs,
+			retries: runtime.config.workerRetries,
+			retryBackoffMs: runtime.config.workerRetryBackoffMs,
+			isSuccess: () => existsSync(runResultPath(runtime.memoryRoot, runId)),
 		});
+		const attemptNote = attempts > 1 ? ` after ${attempts} attempts` : "";
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "observer", runId);
 		if (exit.timeout) {
-			throw new Error(
-				exit.timeout === "wall"
-					? `observer timed out after ${Math.round(runtime.config.workerTimeoutMs / 1000)}s (possible tool-call loop; see ${logPath})`
-					: `observer idle-timed out after ${Math.round(runtime.config.workerIdleTimeoutMs / 1000)}s with no output (stalled provider? see ${logPath})`,
-			);
+			throw new Error(timeoutMessage("observer", exit.timeout, runtime.config, logPath) + attemptNote);
+		}
+		if (doomReason !== undefined) {
+			throw new Error(`observer aborted by doom guard: ${doomReason}${attemptNote} (log: ${logPath})`);
 		}
 		if (exit.code !== 0) {
 			throw new Error(
-				`observer exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""} (log: ${logPath})`,
+				`observer exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""}${attemptNote} (log: ${logPath})`,
 			);
 		}
 

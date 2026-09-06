@@ -71,6 +71,36 @@ export interface Config {
 	 */
 	workerIdleTimeoutMs: number;
 	/**
+	 * Worker repetition (doom) guard: when enabled, the worker extension aborts its own turn if the
+	 * model collapses into an intra-message token loop ("duct duct…") or a runaway-length turn. See
+	 * src/spawn/doom.ts for the detector. Default true.
+	 */
+	workerDoomGuard: boolean;
+	/** Whole repetitions of a short period required before the guard fires (conservative: high). */
+	workerDoomMinRepeats: number;
+	/** Trailing window (chars) that must be tiled by the period to count as a loop. */
+	workerDoomMinChars: number;
+	/** Largest candidate period length the guard considers. */
+	workerDoomMaxPeriod: number;
+	/** Hard cap on a single assistant turn's streamed chars; beyond it the guard aborts. */
+	workerDoomMaxTurnChars: number;
+	/**
+	 * Progress-idle cap: killed if the worker records NO activity (no streaming delta, no tool call,
+	 * no turn boundary) for this long — measured from the worker's own heartbeat file, not stdout
+	 * (a headless `pi -p` run buffers all output to exit, so bytes are not a liveness signal). An
+	 * actively doom-looping worker keeps heartbeating, so it is bounded by the doom guard, not this.
+	 * Default 300000 (5 min); `0` disables the progress cap.
+	 */
+	workerProgressIdleTimeoutMs: number;
+	/**
+	 * Extra attempts after a failed/timed-out/doomed worker, re-spawned within the same dispatch
+	 * before it counts as a single failure to the circuit breaker. Default 0 (opt-in — each retry
+	 * burns additional cost).
+	 */
+	workerRetries: number;
+	/** Base delay between worker retry attempts (linear backoff: attempt N waits N× this). */
+	workerRetryBackoffMs: number;
+	/**
 	 * Consecutive failed auto-consolidations that open the consolidator circuit breaker. Once open,
 	 * the auto-trigger stops dispatching new consolidators (so a broken batch that fails every tick
 	 * can no longer hot-loop forever burning cost), and `/om:status` surfaces it. A successful
@@ -104,6 +134,14 @@ export const DEFAULTS: Config = {
 	debugLog: false,
 	workerTimeoutMs: 20 * 60 * 1000,
 	workerIdleTimeoutMs: 0,
+	workerDoomGuard: true,
+	workerDoomMinRepeats: 32,
+	workerDoomMinChars: 320,
+	workerDoomMaxPeriod: 32,
+	workerDoomMaxTurnChars: 40_000,
+	workerProgressIdleTimeoutMs: 5 * 60 * 1000,
+	workerRetries: 0,
+	workerRetryBackoffMs: 2_000,
 	consolidatorMaxConsecutiveFailures: 3,
 	consolidatorRetryCooldownMs: 120 * 1000,
 };
@@ -186,6 +224,17 @@ export function normalizeSettingsConfig(value: Record<string, unknown>, base: Co
 	if (workerTimeoutMs !== undefined) normalized.workerTimeoutMs = workerTimeoutMs;
 	const workerIdleTimeoutMs = nonNegativeIntegerOrUndefined(value.workerIdleTimeoutMs);
 	if (workerIdleTimeoutMs !== undefined) normalized.workerIdleTimeoutMs = workerIdleTimeoutMs;
+	if (typeof value.workerDoomGuard === "boolean") normalized.workerDoomGuard = value.workerDoomGuard;
+	for (const key of ["workerDoomMinRepeats", "workerDoomMinChars", "workerDoomMaxPeriod", "workerDoomMaxTurnChars"] as const) {
+		const v = positiveIntegerOrUndefined(value[key]);
+		if (v !== undefined) normalized[key] = v;
+	}
+	const workerProgressIdleTimeoutMs = nonNegativeIntegerOrUndefined(value.workerProgressIdleTimeoutMs);
+	if (workerProgressIdleTimeoutMs !== undefined) normalized.workerProgressIdleTimeoutMs = workerProgressIdleTimeoutMs;
+	const workerRetries = nonNegativeIntegerOrUndefined(value.workerRetries);
+	if (workerRetries !== undefined) normalized.workerRetries = workerRetries;
+	const workerRetryBackoffMs = nonNegativeIntegerOrUndefined(value.workerRetryBackoffMs);
+	if (workerRetryBackoffMs !== undefined) normalized.workerRetryBackoffMs = workerRetryBackoffMs;
 	const consolidatorMaxConsecutiveFailures = nonNegativeIntegerOrUndefined(value.consolidatorMaxConsecutiveFailures);
 	if (consolidatorMaxConsecutiveFailures !== undefined) normalized.consolidatorMaxConsecutiveFailures = consolidatorMaxConsecutiveFailures;
 	const consolidatorRetryCooldownMs = nonNegativeIntegerOrUndefined(value.consolidatorRetryCooldownMs);

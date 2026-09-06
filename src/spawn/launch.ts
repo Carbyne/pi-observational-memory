@@ -7,11 +7,11 @@
  * project path in `~/.pi/agent/sessions` and is openable in the session browser.
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
-import { runCostPath, runResultPath } from "./runs.js";
+import { runCostPath, runDoomPath, runLogPath, runProgressPath, runResultPath } from "./runs.js";
 
 /** Repo root = two levels up from src/spawn/. The shared agent extension lives at agent/index.ts. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -78,7 +78,7 @@ export type WorkerExit = {
 	signal: NodeJS.Signals | null;
 	stderr: string;
 	/** Why the watchdog killed the run (undefined when the worker exited on its own). */
-	timeout?: "wall" | "idle";
+	timeout?: "wall" | "idle" | "progress";
 };
 
 /**
@@ -105,6 +105,10 @@ export function spawnWorker(opts: {
 	logPath?: string;
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
+	/** Path of the worker's liveness heartbeat file (written by the worker extension). */
+	progressPath?: string;
+	/** Kill the run if the heartbeat file has not advanced for this long; 0/undefined disables. */
+	progressIdleMs?: number;
 }): Promise<WorkerExit> {
 	const [command, ...rest] = opts.argv;
 	mkdirSync(opts.cwd, { recursive: true });
@@ -145,16 +149,44 @@ export function spawnWorker(opts: {
 		proc.stdout?.on("data", tee("stdout"));
 		proc.stderr?.on("data", tee("stderr"));
 
+		// Progress-idle cap: the worker's own heartbeat file mtime is the liveness signal (a headless
+		// run emits no stdout/stderr until exit, so bytes can't tell alive-from-wedged). Reset baseline
+		// to spawn time so a worker that never heartbeats is also eventually reclaimed.
+		let progressTimer: ReturnType<typeof setInterval> | undefined;
+		const clearProgress = (): void => {
+			if (progressTimer !== undefined) clearInterval(progressTimer);
+		};
+		const spawnTime = Date.now();
+		if (opts.progressIdleMs && opts.progressIdleMs > 0 && opts.progressPath) {
+			const progressPath = opts.progressPath;
+			const limit = opts.progressIdleMs;
+			progressTimer = setInterval(() => {
+				let last = spawnTime;
+				try {
+					const st = statSync(progressPath);
+					if (st.mtimeMs > 0) last = st.mtimeMs;
+				} catch {
+					// not created yet → treat as spawnTime (never heartbeated)
+				}
+				if (Date.now() - last > limit) {
+					timeoutReason = "progress";
+					kill();
+				}
+			}, 1000);
+			progressTimer.unref?.();
+		}
+
 		const finish = (result: WorkerExit): void => {
 			if (settled) return;
 			settled = true;
 			clearHard();
 			clearIdle();
+			clearProgress();
 			if (logPath && result.timeout) {
 				try {
 					appendFileSync(
 						logPath,
-						`\n# om watchdog: killed (${result.timeout === "wall" ? "hard timeout" : "idle timeout"})\n`,
+						`\n# om watchdog: killed (${result.timeout === "wall" ? "hard timeout" : result.timeout === "progress" ? "progress/idle (no worker activity)" : "idle timeout"})\n`,
 						"utf-8",
 					);
 				} catch {
@@ -218,6 +250,14 @@ export type ObserverLaunchEnv = {
 	/** Absolute `.memory/<sessionId>/` root — IPC files and the consolidator sandbox live here. */
 	memoryRoot: string;
 	runId: string;
+	/** Repetition-guard knobs from config; when `enabled` false the worker still heartbeats but never aborts. */
+	doom?: {
+		enabled: boolean;
+		minRepeats: number;
+		minChars: number;
+		maxPeriod: number;
+		maxTurnChars: number;
+	};
 };
 
 /**
@@ -225,7 +265,7 @@ export type ObserverLaunchEnv = {
  * from an `@file` CLI argument and still becomes the worker's recorded user message.
  */
 export function buildWorkerEnv(role: "observer" | "consolidator", opts: ObserverLaunchEnv): NodeJS.ProcessEnv {
-	return {
+	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		OM_WORKER: role,
 		OM_RUN_ID: opts.runId,
@@ -234,5 +274,17 @@ export function buildWorkerEnv(role: "observer" | "consolidator", opts: Observer
 		OM_COST_PATH: runCostPath(opts.memoryRoot, opts.runId),
 		// Sandbox root for the consolidator's scoped file tools (design risk 6).
 		OM_MEMORY_DIR: opts.memoryRoot,
+		// Liveness heartbeat + doom sentinel + live log the worker extension writes to.
+		OM_PROGRESS_PATH: runProgressPath(opts.memoryRoot, opts.runId),
+		OM_DOOM_PATH: runDoomPath(opts.memoryRoot, opts.runId),
+		OM_LOG_PATH: runLogPath(opts.memoryRoot, opts.runId),
 	};
+	if (opts.doom) {
+		env.OM_DOOM = opts.doom.enabled ? "1" : "0";
+		env.OM_DOOM_MIN_REPEATS = String(opts.doom.minRepeats);
+		env.OM_DOOM_MIN_CHARS = String(opts.doom.minChars);
+		env.OM_DOOM_MAX_PERIOD = String(opts.doom.maxPeriod);
+		env.OM_DOOM_MAX_TURN_CHARS = String(opts.doom.maxTurnChars);
+	}
+	return env;
 }

@@ -134,6 +134,14 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "debugLog": false,
     "workerTimeoutMs": 1200000,           // hard cap per worker run (kill + free slot); 20 min default
     "workerIdleTimeoutMs": 0,             // no-output cap (catches a stalled provider); 0 = disabled (default)
+    "workerDoomGuard": true,               // worker self-aborts a token-repetition collapse ("duct duct…")
+    "workerDoomMinRepeats": 32,            // whole copies of a short unit before the guard fires
+    "workerDoomMinChars": 320,             // trailing window that must be tiled to count as a loop
+    "workerDoomMaxPeriod": 32,             // largest candidate period length
+    "workerDoomMaxTurnChars": 40000,       // hard per-turn generated-text cap; beyond it, abort
+    "workerProgressIdleTimeoutMs": 300000, // no activity (no token/tool/turn) for 5 min → reclaim; 0 disables
+    "workerRetries": 0,                    // extra attempts after a failed/doomed worker (opt-in; each burns cost)
+    "workerRetryBackoffMs": 2000,          // linear backoff between retries (attempt N waits N× this)
     "consolidatorMaxConsecutiveFailures": 3, // consecutive failed consolidations that open the breaker
     "consolidatorRetryCooldownMs": 120000  // min interval between auto consolidation retries
   }
@@ -207,6 +215,37 @@ live to forensic:
 > `debugLog` is a **reserved** flag: the NDJSON writer (`src/debug-log.ts`) is implemented but
 > not yet wired into the pipeline, so it currently emits nothing. The live worker log above is
 > the supported path today.
+
+### Worker heartbeat, doom guard, and retries
+
+The watchdog watches the subprocess (wall clock / stdout bytes), but a headless `pi -p` worker
+buffers **all** its output until exit — so between spawn and finish, a running worker looks
+identical whether it is streaming tokens or wedged on a provider. Three mechanisms close that gap:
+
+- **Heartbeat + progress-idle.** The worker extension touches `.runs/<runId>.progress` on run/turn/
+  tool/streaming activity. The master polls that file's mtime; `workerProgressIdleTimeoutMs` (default
+  **5 min**) reclaims a worker that records **no activity at all** (a true provider stall) — unlike
+  `workerIdleTimeoutMs`, this keys on real progress, not stdout bytes, so it does not false-kill a
+  slow-but-alive worker. `0` disables it.
+- **Doom guard (worker self-abort).** Cheap models sometimes collapse into an intra-message token
+  loop — emitting `duct duct duct…` forever in a single turn that never terminates. The worker's own
+  extension watches its `message_update` **text/thinking** deltas and, on a pathological repetition
+  (a short unit tiling `workerDoomMinChars` at least `workerDoomMinRepeats` times — the
+  "same thing over and over" signature) or a runaway turn past `workerDoomMaxTurnChars` chars, calls
+  `pi.abort()`, writes a `.runs/<runId>.doom` sentinel, and marks the live log (`om doom-guard: aborted …`).
+  It watches prose **only** — a consolidator legitimately writing a large file (which streams as
+  tool-call args) is never mistaken for a loop. Enabled by default; tune thresholds or set
+  `workerDoomGuard: false`. (This is deliberately narrower than general tool-call loop detectors —
+  it targets exactly the repetition collapse we see.)
+- **Retries (opt-in).** `workerRetries` (default **0**) re-dispatches a failed / timed-out / doomed
+  worker up to N extra times, within a single dispatch, with linear `workerRetryBackoffMs` backoff,
+  before it counts as one failure to the circuit breaker. Off by default because each retry burns
+  additional cost; flip it on per setup if your worker model is flaky.
+
+All three only work because workers **stream** (the model provider must use a non-buffering path —
+e.g. `pi-gateway-discovery` with `directHttpStreaming`, which the model gateway already sets for the
+`yoda` gateways). If a worker model ever came from a buffering provider, the doom guard and
+heartbeat could not fire mid-turn and the 20-min wall cap would be the only reclaim.
 
 ### Consolidator circuit breaker
 

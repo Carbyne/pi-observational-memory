@@ -16,6 +16,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trackWorkerCost } from "./cost.js";
+import { trackWorkerLiveness } from "./liveness.js";
 import { CONSOLIDATOR_SYSTEM } from "./consolidator/prompt.js";
 import { registerConsolidatorTools } from "./consolidator/tools.js";
 import { OBSERVER_SYSTEM } from "./observer/prompt.js";
@@ -28,6 +29,9 @@ export default function omWorker(pi: ExtensionAPI): void {
 	// Shared across roles: pull pi's built-in cost and hand it back via the cost file.
 	// Registered first so it writes the cost file before each role's agent_end shutdown.
 	trackWorkerCost(pi);
+	// Shared across roles: heartbeat the master + self-abort a repetition doom loop. Registered
+	// after cost so cost accumulation still sees every finalized message.
+	trackWorkerLiveness(pi);
 
 	if (role === "observer") {
 		if (!resultPath) throw new Error("OM_RESULT_PATH not set for observer worker");

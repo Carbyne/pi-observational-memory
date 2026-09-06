@@ -8,7 +8,7 @@
  * Worker recordings themselves live in pi's GLOBAL session store, not here (decision 11).
  * `.memory/.runs/` clutter is not GC'd in v1 (accepted).
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** What the observer model emits, before the orchestrator re-derives precise timestamp-ids. */
@@ -36,6 +36,50 @@ export function runResultPath(root: string, runId: string): string {
  */
 export function runLogPath(root: string, runId: string): string {
 	return join(runsDir(root), `${runId}.log`);
+}
+
+/**
+ * Per-run liveness heartbeat. The WORKER extension touches this on agent/turn/streaming/tool
+ * activity (NOT the master). The master polls its mtime to tell an actively-progressing worker
+ * (streaming tokens, running tools) from one wedged on a provider that never answers — a signal
+ * that stdout/stderr can't give for a headless `pi -p` run (which buffers all output to exit).
+ */
+export function runProgressPath(root: string, runId: string): string {
+	return join(runsDir(root), `${runId}.progress`);
+}
+
+/**
+ * Per-run doom-loop sentinel. The WORKER extension writes this (with a human reason) when its
+ * repetition guard aborts a runaway turn, so the master can distinguish "the model collapsed into
+ * a token loop and we self-aborted" from a plain non-zero exit — and retry accordingly.
+ */
+export function runDoomPath(root: string, runId: string): string {
+	return join(runsDir(root), `${runId}.doom`);
+}
+
+/** Reason string if a run's doom sentinel exists, else undefined. */
+export function readWorkerDoom(path: string): string | undefined {
+	try {
+		const raw = readFileSync(path, "utf-8").trim();
+		return raw.length > 0 ? raw : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Remove a run's per-attempt IPC files before (re)spawning, so a retry never reads a stale
+ * result/cost/doom/progress from a previous attempt. Best-effort. The prompt + log seed are left
+ * (log is re-seeded by spawnWorker; prompt is unchanged across attempts).
+ */
+export function clearWorkerAttemptFiles(root: string, runId: string): void {
+	for (const p of [runResultPath(root, runId), runCostPath(root, runId), runDoomPath(root, runId), runProgressPath(root, runId)]) {
+		try {
+			rmSync(p, { force: true });
+		} catch {
+			// ignore
+		}
+	}
 }
 
 /**
