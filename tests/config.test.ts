@@ -96,6 +96,7 @@ describe("normalizeSettingsConfig: models", () => {
 describe("normalizeSettingsConfig: worker liveness / doom guard / retry", () => {
 	it("defaults: doom guard on/conservative, progress-idle 5min, retry off", () => {
 		expect(DEFAULTS.workerDoomGuard).toBe(true);
+		expect(DEFAULTS.masterDoomGuard).toBe(false); // main-agent guard is opt-in
 		expect(DEFAULTS.workerDoomMinRepeats).toBe(32);
 		expect(DEFAULTS.workerDoomMinChars).toBe(320);
 		expect(DEFAULTS.workerDoomMaxPeriod).toBe(32);
@@ -109,6 +110,7 @@ describe("normalizeSettingsConfig: worker liveness / doom guard / retry", () => 
 		const n = normalizeSettingsConfig(
 			{
 				workerDoomGuard: false,
+				masterDoomGuard: true,
 				workerDoomMinRepeats: 50,
 				workerDoomMinChars: 500,
 				workerDoomMaxPeriod: 16,
@@ -120,6 +122,7 @@ describe("normalizeSettingsConfig: worker liveness / doom guard / retry", () => 
 			DEFAULTS,
 		);
 		expect(n.workerDoomGuard).toBe(false);
+		expect(n.masterDoomGuard).toBe(true);
 		expect(n.workerDoomMinRepeats).toBe(50);
 		expect(n.workerDoomMinChars).toBe(500);
 		expect(n.workerDoomMaxPeriod).toBe(16);

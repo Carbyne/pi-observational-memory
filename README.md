@@ -135,6 +135,7 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "workerTimeoutMs": 1200000,           // hard cap per worker run (kill + free slot); 20 min default
     "workerIdleTimeoutMs": 0,             // no-output cap (catches a stalled provider); 0 = disabled (default)
     "workerDoomGuard": true,               // worker self-aborts a token-repetition collapse ("duct duct…")
+    "masterDoomGuard": false,              // main-agent guard: steer→abort on the user's own turn (opt-in)
     "workerDoomMinRepeats": 32,            // whole copies of a short unit before the guard fires
     "workerDoomMinChars": 320,             // trailing window that must be tiled to count as a loop
     "workerDoomMaxPeriod": 32,             // largest candidate period length
@@ -246,6 +247,23 @@ All three only work because workers **stream** (the model provider must use a no
 e.g. `pi-gateway-discovery` with `directHttpStreaming`, which the model gateway already sets for the
 `yoda` gateways). If a worker model ever came from a buffering provider, the doom guard and
 heartbeat could not fire mid-turn and the 20-min wall cap would be the only reclaim.
+
+#### Main-agent doom guard (`masterDoomGuard`, default off)
+
+The same collapse hits the user's own interactive session (e.g. the assistant emitting
+`BSRRductduct…` inside one streamed reply). Enable `masterDoomGuard` to protect the main agent too.
+Because aborting a user's own turn is intrusive, it is **opt-in** and the escalation is **gentler**
+than the worker's silent abort, using pi's live steering:
+
+1. On the first detection in a turn it **steers**: `sendUserMessage(…, { deliverAs: "steer" })` nudges
+   the model out of the loop ("discard the broken repetition and continue concisely") and warns you —
+   the turn keeps running, so a false positive costs nothing but a hint.
+2. If it is **still** repeating afterward, it **aborts** the turn and control returns to you (no
+   auto-continue). Reuses the same thresholds (`workerDoomMin*` / `workerDoomMaxPeriod` /
+   `workerDoomMaxTurnChars`); scans assistant **text/thinking only**, never tool-call args.
+
+`/om:status` shows `doom guard: worker on (…) · main-agent on (steer→abort)` so you can see which are
+armed.
 
 ### Consolidator circuit breaker
 

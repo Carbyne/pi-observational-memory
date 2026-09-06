@@ -5,6 +5,13 @@ import { estimateStringTokens } from "../tokens.js";
 import type { Runtime } from "../runtime.js";
 import { renderTimeline } from "../ui/timeline.js";
 
+function dur(ms: number): string {
+	if (!ms) return "off";
+	if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+	if (ms % 1_000 === 0) return `${ms / 1_000}s`;
+	return `${ms}ms`;
+}
+
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:status", {
 		description: "Show observational-memory status (workers, buffer, clocks)",
@@ -38,6 +45,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 							? `idle (${runtime.consolidatorFailures} failures; retry in ${Math.max(0, Math.ceil((runtime.consolidatorNextRetryAt - Date.now()) / 1000))}s)`
 							: "idle"}`,
 				`  last compaction wait: ${runtime.lastCompactionObserverWait ?? "n/a"}`,
+				`  worker: wall ${dur(runtime.config.workerTimeoutMs)}, idle ${dur(runtime.config.workerIdleTimeoutMs)}, progress-idle ${dur(runtime.config.workerProgressIdleTimeoutMs)}, retries ${runtime.config.workerRetries}`,
+				`  doom guard: worker ${runtime.config.workerDoomGuard ? `on (×${runtime.config.workerDoomMinRepeats}/${runtime.config.workerDoomMaxPeriod}ch)` : "off"} · main-agent ${runtime.config.masterDoomGuard ? "on (steer→abort)" : "off"}`,
 				`  topic files: ${topicCount}`,
 				`  journey: ${journey ? `~${estimateStringTokens(journey).toLocaleString()} / ${runtime.config.journeyTargetTokens.toLocaleString()} tok` : "none yet"}`,
 				`  context: ${contextTokens != null ? contextTokens.toLocaleString() : "?"} / ${runtime.config.compactAtContextTokens.toLocaleString()} tok`,

@@ -76,6 +76,13 @@ export interface Config {
 	 * src/spawn/doom.ts for the detector. Default true.
 	 */
 	workerDoomGuard: boolean;
+	/**
+	 * Main-agent doom guard (separate from the worker guard). When on, the user's OWN interactive
+	 * session gets a gentler escalation on a repetition collapse: steer the model out of the loop
+	 * first, then abort the turn if it keeps repeating. Reuses the same thresholds as the worker
+	 * guard. Default false — aborting a user's own turn must be opt-in.
+	 */
+	masterDoomGuard: boolean;
 	/** Whole repetitions of a short period required before the guard fires (conservative: high). */
 	workerDoomMinRepeats: number;
 	/** Trailing window (chars) that must be tiled by the period to count as a loop. */
@@ -135,6 +142,7 @@ export const DEFAULTS: Config = {
 	workerTimeoutMs: 20 * 60 * 1000,
 	workerIdleTimeoutMs: 0,
 	workerDoomGuard: true,
+	masterDoomGuard: false,
 	workerDoomMinRepeats: 32,
 	workerDoomMinChars: 320,
 	workerDoomMaxPeriod: 32,
@@ -225,6 +233,7 @@ export function normalizeSettingsConfig(value: Record<string, unknown>, base: Co
 	const workerIdleTimeoutMs = nonNegativeIntegerOrUndefined(value.workerIdleTimeoutMs);
 	if (workerIdleTimeoutMs !== undefined) normalized.workerIdleTimeoutMs = workerIdleTimeoutMs;
 	if (typeof value.workerDoomGuard === "boolean") normalized.workerDoomGuard = value.workerDoomGuard;
+	if (typeof value.masterDoomGuard === "boolean") normalized.masterDoomGuard = value.masterDoomGuard;
 	for (const key of ["workerDoomMinRepeats", "workerDoomMinChars", "workerDoomMaxPeriod", "workerDoomMaxTurnChars"] as const) {
 		const v = positiveIntegerOrUndefined(value[key]);
 		if (v !== undefined) normalized[key] = v;
