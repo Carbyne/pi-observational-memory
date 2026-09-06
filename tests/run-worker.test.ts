@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runWorker } from "../src/spawn/run-worker.js";
-import { runDoomPath, runLogPath, runProgressPath } from "../src/spawn/runs.js";
+import { runLogPath, runProgressPath } from "../src/spawn/runs.js";
 
 const NODE = process.execPath;
 const BASE_ENV = { ...process.env } as NodeJS.ProcessEnv;
@@ -82,23 +82,6 @@ describe("runWorker: retry resilience", () => {
 			retryBackoffMs: 0,
 		});
 		expect(attempts).toBe(1);
-	}, 10_000);
-
-	it("treats a doom sentinel as a non-clean run (surfaces doomReason)", async () => {
-		const runId = "cons-r4";
-		// Child exits 0 but writes the doom sentinel → runWorker must surface doomReason (not clean).
-		const script = `const fs=require("fs");fs.writeFileSync(process.env.OM_DOOM,"repetition collapse: 5-char unit");process.exit(0)`;
-		const env = { ...BASE_ENV, OM_DOOM: runDoomPath(dir, runId) } as NodeJS.ProcessEnv;
-		const { exit, doomReason, attempts } = await runWorker({
-			...baseOpts(dir, runId),
-			argv: [NODE, "-e", script],
-			env,
-			retries: 0,
-			retryBackoffMs: 0,
-		});
-		expect(exit.code).toBe(0);
-		expect(attempts).toBe(1);
-		expect(doomReason).toContain("repetition collapse");
 	}, 10_000);
 
 	it("isSuccess predicate gates a clean exit (e.g. missing result file forces a retry)", async () => {

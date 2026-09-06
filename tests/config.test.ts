@@ -93,49 +93,31 @@ describe("normalizeSettingsConfig: models", () => {
 	});
 });
 
-describe("normalizeSettingsConfig: worker liveness / doom guard / retry", () => {
-	it("defaults: doom guard on/conservative, progress-idle 5min, retry off", () => {
-		expect(DEFAULTS.workerDoomGuard).toBe(true);
-		expect(DEFAULTS.masterDoomGuard).toBe(false); // main-agent guard is opt-in
-		expect(DEFAULTS.workerDoomMinRepeats).toBe(32);
-		expect(DEFAULTS.workerDoomMinChars).toBe(320);
-		expect(DEFAULTS.workerDoomMaxPeriod).toBe(32);
-		expect(DEFAULTS.workerDoomMaxTurnChars).toBe(40_000);
+describe("normalizeSettingsConfig: worker watchdog / retry", () => {
+	it("defaults: wall 20min, idle off, progress-idle 5min, retry off", () => {
+		expect(DEFAULTS.workerTimeoutMs).toBe(1_200_000);
+		expect(DEFAULTS.workerIdleTimeoutMs).toBe(0);
 		expect(DEFAULTS.workerProgressIdleTimeoutMs).toBe(300_000);
 		expect(DEFAULTS.workerRetries).toBe(0);
 		expect(DEFAULTS.workerRetryBackoffMs).toBe(2_000);
 	});
 
-	it("normalizes the doom-guard + progress-idle + retry knobs, accepting 0 where meaningful", () => {
+	it("normalizes the progress-idle + retry knobs, accepting 0 where meaningful", () => {
 		const n = normalizeSettingsConfig(
 			{
-				workerDoomGuard: false,
-				masterDoomGuard: true,
-				workerDoomMinRepeats: 50,
-				workerDoomMinChars: 500,
-				workerDoomMaxPeriod: 16,
-				workerDoomMaxTurnChars: 20_000,
 				workerProgressIdleTimeoutMs: 0, // 0 disables
 				workerRetries: 3,
 				workerRetryBackoffMs: 1_000,
 			},
 			DEFAULTS,
 		);
-		expect(n.workerDoomGuard).toBe(false);
-		expect(n.masterDoomGuard).toBe(true);
-		expect(n.workerDoomMinRepeats).toBe(50);
-		expect(n.workerDoomMinChars).toBe(500);
-		expect(n.workerDoomMaxPeriod).toBe(16);
-		expect(n.workerDoomMaxTurnChars).toBe(20_000);
 		expect(n.workerProgressIdleTimeoutMs).toBe(0);
 		expect(n.workerRetries).toBe(3);
 		expect(n.workerRetryBackoffMs).toBe(1_000);
 	});
 
 	it("rejects negative / non-integer threshold values (kept at defaults)", () => {
-		expect(normalizeSettingsConfig({ workerDoomMinRepeats: -1 }, DEFAULTS).workerDoomMinRepeats).toBeUndefined();
 		expect(normalizeSettingsConfig({ workerRetries: 1.5 }, DEFAULTS).workerRetries).toBeUndefined();
 		expect(normalizeSettingsConfig({ workerProgressIdleTimeoutMs: -5 }, DEFAULTS).workerProgressIdleTimeoutMs).toBeUndefined();
-		expect(normalizeSettingsConfig({ workerDoomGuard: "yes" }, DEFAULTS).workerDoomGuard).toBeUndefined();
 	});
 });

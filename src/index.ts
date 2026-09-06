@@ -16,7 +16,6 @@ import { registerStatusCommand } from "./commands/status.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
 import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
 import { registerConsolidatorTrigger } from "./hooks/consolidator-trigger.js";
-import { registerMasterDoomHook } from "./hooks/doom-hook.js";
 import { registerObserverTrigger } from "./hooks/observer-trigger.js";
 import { OM_ENABLED, type Entry } from "./ledger/index.js";
 import { ensureSessionMemory } from "./memory/session.js";
@@ -88,9 +87,6 @@ export default function observationalMemory(pi: ExtensionAPI): void {
 	registerConsolidatorTrigger(pi, runtime);
 	registerCompactionTrigger(pi, runtime);
 	registerCompactionHook(pi, runtime);
-	// Main-agent doom-loop guard: self-gates purely on config.masterDoomGuard (default off),
-	// independent of the memory on/off gate — a user can enable it regardless of that gate.
-	registerMasterDoomHook(pi, runtime);
 
 	registerStatusCommand(pi, runtime);
 	registerCompactCommand(pi, runtime);

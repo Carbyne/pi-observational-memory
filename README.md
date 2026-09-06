@@ -134,14 +134,8 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     "debugLog": false,
     "workerTimeoutMs": 1200000,           // hard cap per worker run (kill + free slot); 20 min default
     "workerIdleTimeoutMs": 0,             // no-output cap (catches a stalled provider); 0 = disabled (default)
-    "workerDoomGuard": true,               // worker self-aborts a token-repetition collapse ("duct duct…")
-    "masterDoomGuard": false,              // main-agent guard: steer→abort on the user's own turn (opt-in)
-    "workerDoomMinRepeats": 32,            // whole copies of a short unit before the guard fires
-    "workerDoomMinChars": 320,             // trailing window that must be tiled to count as a loop
-    "workerDoomMaxPeriod": 32,             // largest candidate period length
-    "workerDoomMaxTurnChars": 40000,       // hard per-turn generated-text cap; beyond it, abort
     "workerProgressIdleTimeoutMs": 300000, // no activity (no token/tool/turn) for 5 min → reclaim; 0 disables
-    "workerRetries": 0,                    // extra attempts after a failed/doomed worker (opt-in; each burns cost)
+    "workerRetries": 0,                    // extra attempts after a failed/timed-out worker (opt-in; each burns cost)
     "workerRetryBackoffMs": 2000,          // linear backoff between retries (attempt N waits N× this)
     "consolidatorMaxConsecutiveFailures": 3, // consecutive failed consolidations that open the breaker
     "consolidatorRetryCooldownMs": 120000  // min interval between auto consolidation retries
@@ -217,7 +211,7 @@ live to forensic:
 > not yet wired into the pipeline, so it currently emits nothing. The live worker log above is
 > the supported path today.
 
-### Worker heartbeat, doom guard, and retries
+### Worker heartbeat, watchdog, and retries
 
 The watchdog watches the subprocess (wall clock / stdout bytes), but a headless `pi -p` worker
 buffers **all** its output until exit — so between spawn and finish, a running worker looks
@@ -228,42 +222,33 @@ identical whether it is streaming tokens or wedged on a provider. Three mechanis
   **5 min**) reclaims a worker that records **no activity at all** (a true provider stall) — unlike
   `workerIdleTimeoutMs`, this keys on real progress, not stdout bytes, so it does not false-kill a
   slow-but-alive worker. `0` disables it.
-- **Doom guard (worker self-abort).** Cheap models sometimes collapse into an intra-message token
-  loop — emitting `duct duct duct…` forever in a single turn that never terminates. The worker's own
-  extension watches its `message_update` **text/thinking** deltas and, on a pathological repetition
-  (a short unit tiling `workerDoomMinChars` at least `workerDoomMinRepeats` times — the
-  "same thing over and over" signature) or a runaway turn past `workerDoomMaxTurnChars` chars, calls
-  `pi.abort()`, writes a `.runs/<runId>.doom` sentinel, and marks the live log (`om doom-guard: aborted …`).
-  It watches prose **only** — a consolidator legitimately writing a large file (which streams as
-  tool-call args) is never mistaken for a loop. Enabled by default; tune thresholds or set
-  `workerDoomGuard: false`. (This is deliberately narrower than general tool-call loop detectors —
-  it targets exactly the repetition collapse we see.)
-- **Retries (opt-in).** `workerRetries` (default **0**) re-dispatches a failed / timed-out / doomed
-  worker up to N extra times, within a single dispatch, with linear `workerRetryBackoffMs` backoff,
-  before it counts as one failure to the circuit breaker. Off by default because each retry burns
-  additional cost; flip it on per setup if your worker model is flaky.
+- **Retries (opt-in).** `workerRetries` (default **0**) re-dispatches a failed / timed-out worker up
+  to N extra times, within a single dispatch, with linear `workerRetryBackoffMs` backoff, before it
+  counts as one failure to the circuit breaker. Off by default because each retry burns additional
+  cost; flip it on per setup if your worker model is flaky.
 
-All three only work because workers **stream** (the model provider must use a non-buffering path —
-e.g. `pi-gateway-discovery` with `directHttpStreaming`, which the model gateway already sets for the
-`yoda` gateways). If a worker model ever came from a buffering provider, the doom guard and
-heartbeat could not fire mid-turn and the 20-min wall cap would be the only reclaim.
+These only work because workers **stream** (the model provider must use a non-buffering path — e.g.
+`pi-gateway-discovery` with `directHttpStreaming`, which the model gateway already sets for the
+`yoda` gateways). If a worker model ever came from a buffering provider, the heartbeat could not fire
+mid-turn and the 20-min wall cap would be the only reclaim.
 
-#### Main-agent doom guard (`masterDoomGuard`, default off)
+#### Doom-loop / repetition guard — delegated to `pi-anti-doom-loop`
 
-The same collapse hits the user's own interactive session (e.g. the assistant emitting
-`BSRRductduct…` inside one streamed reply). Enable `masterDoomGuard` to protect the main agent too.
-Because aborting a user's own turn is intrusive, it is **opt-in** and the escalation is **gentler**
-than the worker's silent abort, using pi's live steering:
+Token-repetition collapse ("`…ductductduct…`" in one never-ending streamed turn) and repeated
+tool-call loops are **not** handled by observational-memory. They are handled by the separate,
+standalone [`pi-anti-doom-loop`](https://github.com/Carbyne/pi-anti-doom-loop) extension, which
+protects **whatever pi process loads it** — your interactive session and workers alike:
 
-1. On the first detection in a turn it **steers**: `sendUserMessage(…, { deliverAs: "steer" })` nudges
-   the model out of the loop ("discard the broken repetition and continue concisely") and warns you —
-   the turn keeps running, so a false positive costs nothing but a hint.
-2. If it is **still** repeating afterward, it **aborts** the turn and control returns to you (no
-   auto-continue). Reuses the same thresholds (`workerDoomMin*` / `workerDoomMaxPeriod` /
-   `workerDoomMaxTurnChars`); scans assistant **text/thinking only**, never tool-call args.
+- the **main agent** loads it automatically (it is a normal installed package), so the guard applies
+  whether or not you use observational-memory at all;
+- **workers** spawn with `--no-extensions`, so observational-memory **re-includes** the guard into
+  every worker via `-e` automatically (resolved from the installed package; no config needed). Set
+  `OM_DISABLE_GUARD_MIRROR=1` in the worker environment to opt a worker out without uninstalling.
 
-`/om:status` shows `doom guard: worker on (…) · main-agent on (steer→abort)` so you can see which are
-armed.
+A doom-aborted worker simply fails to write its result file, so the retry loop above picks it up —
+observational-memory keeps no doom-specific state. See the guard extension for its detector and
+settings (it ships conservative text defaults — text-repeat `5`, near-identical similarity `0.8` —
+plus the mid-stream `duct` guard on by default).
 
 ### Consolidator circuit breaker
 

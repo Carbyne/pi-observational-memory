@@ -46,7 +46,6 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 							: "idle"}`,
 				`  last compaction wait: ${runtime.lastCompactionObserverWait ?? "n/a"}`,
 				`  worker: wall ${dur(runtime.config.workerTimeoutMs)}, idle ${dur(runtime.config.workerIdleTimeoutMs)}, progress-idle ${dur(runtime.config.workerProgressIdleTimeoutMs)}, retries ${runtime.config.workerRetries}`,
-				`  doom guard: worker ${runtime.config.workerDoomGuard ? `on (×${runtime.config.workerDoomMinRepeats}/${runtime.config.workerDoomMaxPeriod}ch)` : "off"} · main-agent ${runtime.config.masterDoomGuard ? "on (steer→abort)" : "off"}`,
 				`  topic files: ${topicCount}`,
 				`  journey: ${journey ? `~${estimateStringTokens(journey).toLocaleString()} / ${runtime.config.journeyTargetTokens.toLocaleString()} tok` : "none yet"}`,
 				`  context: ${contextTokens != null ? contextTokens.toLocaleString() : "?"} / ${runtime.config.compactAtContextTokens.toLocaleString()} tok`,

@@ -32,7 +32,7 @@ import { renderIndexFile } from "../memory/index-render.js";
 import { atomicWrite, indexPath, listTopics, readJourney } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
 import { buildWorkerArgv, buildWorkerEnv } from "../spawn/launch.js";
-import { runWorker, timeoutMessage, workerDoomConfig } from "../spawn/run-worker.js";
+import { runWorker, timeoutMessage } from "../spawn/run-worker.js";
 import { runPromptPath, runLogPath, runProgressPath, writeWorkerPrompt } from "../spawn/runs.js";
 import { recordWorkerCost } from "./observer-trigger.js";
 
@@ -135,9 +135,8 @@ async function dispatchConsolidator(
 		const env = buildWorkerEnv("consolidator", {
 			memoryRoot: runtime.memoryRoot,
 			runId,
-			doom: workerDoomConfig(runtime.config),
 		});
-		const { exit, doomReason, attempts } = await runWorker({
+		const { exit, attempts } = await runWorker({
 			argv,
 			cwd: runtime.memoryRoot,
 			env,
@@ -157,9 +156,6 @@ async function dispatchConsolidator(
 		recordWorkerCost(pi, runtime, ctx, "consolidator", runId);
 		if (exit.timeout) {
 			throw new Error(timeoutMessage("consolidator", exit.timeout, runtime.config, logPath) + attemptNote);
-		}
-		if (doomReason !== undefined) {
-			throw new Error(`consolidator aborted by doom guard: ${doomReason}${attemptNote} (log: ${logPath})`);
 		}
 		if (exit.code !== 0) {
 			throw new Error(

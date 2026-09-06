@@ -7,11 +7,11 @@
  * project path in `~/.pi/agent/sessions` and is openable in the session browser.
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
-import { runCostPath, runDoomPath, runLogPath, runProgressPath, runResultPath } from "./runs.js";
+import { runCostPath, runLogPath, runProgressPath, runResultPath } from "./runs.js";
 
 /** Repo root = two levels up from src/spawn/. The shared agent extension lives at agent/index.ts. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -35,6 +35,56 @@ export function resolvePiBinary(): { command: string; baseArgs: string[] } {
 		}
 	}
 	return { command: "pi", baseArgs: [] };
+}
+
+/**
+ * The standalone doom-loop guard is a normal pi package that protects the process it is loaded
+ * into. The master loads it automatically (it is in settings `packages`), but workers spawn with
+ * `--no-extensions`, so user packages are NOT auto-loaded into them — OM re-includes the guard
+ * here so a worker's own streamed turn is protected against the intra-token "duct duct…" collapse.
+ * Resolution is best-effort: if the guard isn't installed, workers simply run without it (exactly
+ * the pre-guard behavior). Cached after the first resolution.
+ */
+const GUARD_EXTENSION_NAME = "pi-anti-doom-loop";
+let guardCache: string[] | undefined;
+
+function piAgentHome(): string {
+	const home = process.env["HOME"] ?? process.env["USERPROFILE"];
+	return home ? join(home, ".pi", "agent") : join("~", ".pi", "agent");
+}
+
+function collectGuardDirs(dir: string, depth: number, out: string[]): void {
+	if (depth > 4) return;
+	let names: string[];
+	try {
+		names = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+	} catch {
+		return;
+	}
+	for (const name of names) {
+		if (name === ".git" || name === "node_modules") continue;
+		const full = join(dir, name);
+		if (name === GUARD_EXTENSION_NAME) {
+			const entry = join(full, "extensions", "index.ts");
+			if (existsSync(entry)) out.push(entry);
+			continue;
+		}
+		if (depth < 3) collectGuardDirs(full, depth + 1, out);
+	}
+}
+
+function guardExtensionPaths(): string[] {
+	// Escape hatch: mirror nothing (also lets a user opt a worker out of the guard without
+	// uninstalling the package, and lets argv-shape tests be deterministic). Checked before the
+	// cache so it applies even after a prior call populated `guardCache`.
+	if (process.env["OM_DISABLE_GUARD_MIRROR"] === "1") return [];
+	if (guardCache) return guardCache;
+	const found: string[] = [];
+	for (const root of [join(piAgentHome(), "git"), join(piAgentHome(), "extensions")]) {
+		collectGuardDirs(root, 0, found);
+	}
+	guardCache = [...new Set(found)];
+	return guardCache;
 }
 
 export function buildWorkerArgv(opts: {
@@ -61,8 +111,12 @@ export function buildWorkerArgv(opts: {
 		modelArg(opts.model),
 	];
 	if (opts.model.thinking) args.push("--thinking", opts.model.thinking);
-	// Provider-registering extensions first, then the worker's own role extension.
-	for (const path of opts.extraExtensionPaths ?? []) args.push("-e", path);
+	// Provider-registering extensions (workerExtensions) first, then the doom-loop guard, then the
+	// worker's own role extension. Dedup so the guard is loaded once even if also listed explicitly.
+	const loadOrder: string[] = [];
+	for (const path of opts.extraExtensionPaths ?? []) loadOrder.push(path);
+	for (const path of guardExtensionPaths()) if (!loadOrder.includes(path)) loadOrder.push(path);
+	for (const path of loadOrder) args.push("-e", path);
 	args.push("-e", opts.agentExtensionPath ?? AGENT_EXTENSION_PATH);
 	args.push("-n", opts.sessionName);
 	// `-p` is a boolean flag when followed by an @file argument. Pi reads the prompt from disk,
@@ -250,14 +304,6 @@ export type ObserverLaunchEnv = {
 	/** Absolute `.memory/<sessionId>/` root — IPC files and the consolidator sandbox live here. */
 	memoryRoot: string;
 	runId: string;
-	/** Repetition-guard knobs from config; when `enabled` false the worker still heartbeats but never aborts. */
-	doom?: {
-		enabled: boolean;
-		minRepeats: number;
-		minChars: number;
-		maxPeriod: number;
-		maxTurnChars: number;
-	};
 };
 
 /**
@@ -274,17 +320,9 @@ export function buildWorkerEnv(role: "observer" | "consolidator", opts: Observer
 		OM_COST_PATH: runCostPath(opts.memoryRoot, opts.runId),
 		// Sandbox root for the consolidator's scoped file tools (design risk 6).
 		OM_MEMORY_DIR: opts.memoryRoot,
-		// Liveness heartbeat + doom sentinel + live log the worker extension writes to.
+		// Liveness heartbeat the worker extension writes; the master polls its mtime.
 		OM_PROGRESS_PATH: runProgressPath(opts.memoryRoot, opts.runId),
-		OM_DOOM_PATH: runDoomPath(opts.memoryRoot, opts.runId),
 		OM_LOG_PATH: runLogPath(opts.memoryRoot, opts.runId),
 	};
-	if (opts.doom) {
-		env.OM_DOOM = opts.doom.enabled ? "1" : "0";
-		env.OM_DOOM_MIN_REPEATS = String(opts.doom.minRepeats);
-		env.OM_DOOM_MIN_CHARS = String(opts.doom.minChars);
-		env.OM_DOOM_MAX_PERIOD = String(opts.doom.maxPeriod);
-		env.OM_DOOM_MAX_TURN_CHARS = String(opts.doom.maxTurnChars);
-	}
 	return env;
 }

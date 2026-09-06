@@ -1,33 +1,20 @@
 /**
- * Resilient worker dispatch: one spawn attempt per try, re-spawning (within the SAME dispatch) on
- * a failed / timed-out / doom-aborted run, up to `retries` extra attempts with linear backoff,
- * before the caller treats it as a single failure (e.g., one strike against the circuit breaker).
+ * Resilient worker dispatch: one spawn attempt per try, re-spawning (within the SAME dispatch) on a
+ * failed / timed-out run, up to `retries` extra attempts with linear backoff, before the caller
+ * treats it as a single failure (e.g., one strike against the circuit breaker).
  *
- * A "clean" run means: exited 0, not watchdog-killed, no doom sentinel, and — if the caller passed
- * `isSuccess` — that predicate (e.g., the observer validates its result file) also passed. Per-attempt
- * IPC files (result/cost/doom/progress) are cleared before each spawn so a retry never reads a stale
- * artifact from a prior attempt; the final successful attempt's files are left for the caller.
+ * A "clean" run means: exited 0, not watchdog-killed, and — if the caller passed `isSuccess` — that
+ * predicate (e.g., the observer validates its result file) also passed. Per-attempt IPC files
+ * (result/cost/progress) are cleared before each spawn so a retry never reads a stale artifact from
+ * a prior attempt; the final successful attempt's files are left for the caller.
+ *
+ * Doom-loop handling is NOT here: the `pi-anti-doom-loop` extension (loaded into the worker via
+ * `-e`) self-aborts a looping turn; an aborted worker then simply fails to produce its result file,
+ * so `isSuccess` is false and this loop retries it — no doom-specific plumbing needed.
  */
 import { spawnWorker, type WorkerExit } from "./launch.js";
-import { clearWorkerAttemptFiles, readWorkerDoom, runDoomPath } from "./runs.js";
+import { clearWorkerAttemptFiles } from "./runs.js";
 import type { Config } from "../config.js";
-
-/** Build the worker repetition-guard env payload from config (see buildWorkerEnv / agent/liveness.ts). */
-export function workerDoomConfig(cfg: Config): {
-	enabled: boolean;
-	minRepeats: number;
-	minChars: number;
-	maxPeriod: number;
-	maxTurnChars: number;
-} {
-	return {
-		enabled: cfg.workerDoomGuard,
-		minRepeats: cfg.workerDoomMinRepeats,
-		minChars: cfg.workerDoomMinChars,
-		maxPeriod: cfg.workerDoomMaxPeriod,
-		maxTurnChars: cfg.workerDoomMaxTurnChars,
-	};
-}
 
 /** Human reason for a watchdog-killed worker run. */
 export function timeoutMessage(
@@ -45,7 +32,6 @@ export function timeoutMessage(
 
 export type WorkerRunOutcome = {
 	exit: WorkerExit;
-	doomReason?: string;
 	/** How many attempts actually ran (>= 1). */
 	attempts: number;
 };
@@ -89,7 +75,6 @@ export async function runWorker(opts: WorkerRunOptions): Promise<WorkerRunOutcom
 	const maxAttempts = Math.max(0, opts.retries) + 1;
 	let attempts = 0;
 	let exit: WorkerExit = { code: 1, signal: null, stderr: "" };
-	let doomReason: string | undefined;
 
 	while (attempts < maxAttempts) {
 		if (attempts > 0) {
@@ -109,15 +94,13 @@ export async function runWorker(opts: WorkerRunOptions): Promise<WorkerRunOutcom
 			progressPath: opts.progressPath,
 			progressIdleMs: opts.progressIdleMs,
 		});
-		doomReason = readWorkerDoom(runDoomPath(opts.memoryRoot, opts.runId));
 		const clean =
 			exit.code === 0 &&
 			exit.timeout === undefined &&
-			doomReason === undefined &&
 			(opts.isSuccess ? opts.isSuccess(exit) : true);
-		if (clean) return { exit, doomReason, attempts };
+		if (clean) return { exit, attempts };
 		if (opts.signal?.aborted) break;
 	}
 
-	return { exit, doomReason, attempts };
+	return { exit, attempts };
 }

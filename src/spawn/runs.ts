@@ -49,31 +49,12 @@ export function runProgressPath(root: string, runId: string): string {
 }
 
 /**
- * Per-run doom-loop sentinel. The WORKER extension writes this (with a human reason) when its
- * repetition guard aborts a runaway turn, so the master can distinguish "the model collapsed into
- * a token loop and we self-aborted" from a plain non-zero exit — and retry accordingly.
- */
-export function runDoomPath(root: string, runId: string): string {
-	return join(runsDir(root), `${runId}.doom`);
-}
-
-/** Reason string if a run's doom sentinel exists, else undefined. */
-export function readWorkerDoom(path: string): string | undefined {
-	try {
-		const raw = readFileSync(path, "utf-8").trim();
-		return raw.length > 0 ? raw : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
  * Remove a run's per-attempt IPC files before (re)spawning, so a retry never reads a stale
- * result/cost/doom/progress from a previous attempt. Best-effort. The prompt + log seed are left
+ * result/cost/progress from a previous attempt. Best-effort. The prompt + log seed are left
  * (log is re-seeded by spawnWorker; prompt is unchanged across attempts).
  */
 export function clearWorkerAttemptFiles(root: string, runId: string): void {
-	for (const p of [runResultPath(root, runId), runCostPath(root, runId), runDoomPath(root, runId), runProgressPath(root, runId)]) {
+	for (const p of [runResultPath(root, runId), runCostPath(root, runId), runProgressPath(root, runId)]) {
 		try {
 			rmSync(p, { force: true });
 		} catch {

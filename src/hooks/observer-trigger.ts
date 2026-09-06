@@ -16,7 +16,7 @@ import {
 } from "../ledger/index.js";
 import type { Runtime } from "../runtime.js";
 import { buildWorkerArgv, buildWorkerEnv } from "../spawn/launch.js";
-import { runWorker, timeoutMessage, workerDoomConfig } from "../spawn/run-worker.js";
+import { runWorker, timeoutMessage } from "../spawn/run-worker.js";
 import {
 	readObserverResult,
 	readWorkerCost,
@@ -167,9 +167,8 @@ async function dispatchObserver(
 		const env = buildWorkerEnv("observer", {
 			memoryRoot: runtime.memoryRoot,
 			runId,
-			doom: workerDoomConfig(runtime.config),
 		});
-		const { exit, doomReason, attempts } = await runWorker({
+		const { exit, attempts } = await runWorker({
 			argv,
 			cwd: runtime.memoryRoot,
 			env,
@@ -190,9 +189,6 @@ async function dispatchObserver(
 		recordWorkerCost(pi, runtime, ctx, "observer", runId);
 		if (exit.timeout) {
 			throw new Error(timeoutMessage("observer", exit.timeout, runtime.config, logPath) + attemptNote);
-		}
-		if (doomReason !== undefined) {
-			throw new Error(`observer aborted by doom guard: ${doomReason}${attemptNote} (log: ${logPath})`);
 		}
 		if (exit.code !== 0) {
 			throw new Error(

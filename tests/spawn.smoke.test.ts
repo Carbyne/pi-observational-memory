@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +13,11 @@ import {
 	writeWorkerPrompt,
 } from "../src/spawn/runs.js";
 import { registerObserverTool } from "../agent/observer/tool.js";
+
+// Deterministic argv shape: these tests assert the pre-guard -e layout. Real runs mirror the
+// standalone pi-anti-doom-loop guard into workers via -e (see launch.ts guardExtensionPaths), which
+// would otherwise make the -e count/order depend on whether that package happens to be installed.
+process.env["OM_DISABLE_GUARD_MIRROR"] = "1";
 
 describe("launch argv + env", () => {
 	const model = { model: "anthropic/claude-sonnet-4-6", thinking: "low" as const };
@@ -155,5 +160,33 @@ describe("registerObserverTool", () => {
 			{ timestamp: "2026-06-25 14:30", content: "first" },
 			{ timestamp: "2026-06-25 14:31", content: "second" },
 		]);
+	});
+});
+
+describe("worker guard mirror (pi-anti-doom-loop)", () => {
+	const model = { model: "anthropic/claude-sonnet-4-6", thinking: "off" as const };
+	it("adds the installed guard as an -e extension, before the agent extension", () => {
+		const home = mkdtempSync("om-home-");
+		const guardDir = join(home, ".pi", "agent", "git", "github.com", "Carbyne", "pi-anti-doom-loop", "extensions");
+		mkdirSync(guardDir, { recursive: true });
+		writeFileSync(join(guardDir, "index.ts"), "export default function () {}\n");
+		const prevHome = process.env["HOME"];
+		const prevDisable = process.env["OM_DISABLE_GUARD_MIRROR"];
+		process.env["HOME"] = home;
+		delete process.env["OM_DISABLE_GUARD_MIRROR"];
+		try {
+			const argv = buildWorkerArgv({ model, sessionName: "om-observer-g", kickoffPromptPath: "/tmp/p.md" });
+			const guardPath = join(guardDir, "index.ts");
+			const eVals = argv
+				.map((a, i) => (a === "-e" ? argv[i + 1] : undefined))
+				.filter((v): v is string => v !== undefined);
+			expect(eVals).toContain(guardPath);
+			expect(eVals[eVals.length - 1]).toBe(AGENT_EXTENSION_PATH); // role extension always last
+			expect(eVals.indexOf(guardPath)).toBeLessThan(eVals.indexOf(AGENT_EXTENSION_PATH));
+		} finally {
+			process.env["HOME"] = prevHome;
+			if (prevDisable !== undefined) process.env["OM_DISABLE_GUARD_MIRROR"] = prevDisable;
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

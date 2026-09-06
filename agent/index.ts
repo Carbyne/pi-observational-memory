@@ -29,8 +29,7 @@ export default function omWorker(pi: ExtensionAPI): void {
 	// Shared across roles: pull pi's built-in cost and hand it back via the cost file.
 	// Registered first so it writes the cost file before each role's agent_end shutdown.
 	trackWorkerCost(pi);
-	// Shared across roles: heartbeat the master + self-abort a repetition doom loop. Registered
-	// after cost so cost accumulation still sees every finalized message.
+	// Shared across roles: heartbeat the master's progress file (liveness watchdog). Doom-loop / repetition detection is NOT here — the standalone `pi-anti-doom-loop` extension (loaded via `-e`) handles it. Registered after cost so cost accumulation still sees every finalized message.
 	trackWorkerLiveness(pi);
 
 	if (role === "observer") {
