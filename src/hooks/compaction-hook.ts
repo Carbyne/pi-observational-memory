@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderMemoryMap } from "../memory/index-render.js";
 import { listTopics, readJourney } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
@@ -162,6 +164,30 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					details: projection.details,
 				},
 			};
+		} catch (error) {
+			// pi's extension runner SWALLOWS session_before_compact handler errors
+			// (emitError only) and silently falls back to the default LLM
+			// summarizer — which can then fail on large contexts (token cap),
+			// leaving the context over threshold. Surface the real error: notify
+			// in the TUI and append to a log file next to the session memory, so
+			// the fallback is diagnosable instead of a mystery.
+			const message = error instanceof Error ? (error.stack || error.message) : String(error);
+			if (hasUI) {
+				ctx.ui.notify(
+					`om: compaction hook failed (falling back to default summarizer): ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			}
+			try {
+				appendFileSync(
+					join(runtime.memoryRoot, "hook-error.log"),
+					`\n=== ${new Date().toISOString()} ===\n${message}\n`,
+					"utf8",
+				);
+			} catch {
+				/* best effort */
+			}
+			throw error;
 		} finally {
 			runtime.compactHookInFlight = false;
 		}
