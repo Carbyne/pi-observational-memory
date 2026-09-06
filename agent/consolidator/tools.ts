@@ -9,7 +9,7 @@
  * that directory, so a wayward model cannot read or clobber the user's project.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
@@ -25,12 +25,34 @@ function fail(text: string): ToolText {
 	return { content: [{ type: "text" as const, text: `Error: ${text}` }], details: { error: true } };
 }
 
-/** Resolve a requested path against the sandbox root, or return undefined if it escapes. */
+/**
+ * Resolve a requested path against the sandbox root, or return undefined if it escapes.
+ *
+ * The model receives paths in the *prompt/INDEX* namespace — the orchestrator advertises topic
+ * paths project-relative (e.g. `.memory/<sessionId>/auth.md`, so the master can `read` them from
+ * the project cwd). But this tool belt is sandboxed AT `.memory/<sessionId>` (root). Accepting
+ * only the sandbox-relative namespace made the model thrash: it faithfully copied the advertised
+ * `.memory/<sessionId>/auth.md`, which naively resolved to `.memory/<sessionId>/.memory/<sessionId>/auth.md`
+ * (ENOENT), so it re-explored until its budget died. Accept every form the model can plausibly
+ * emit — bare filename, project-relative (`.memory/<sessionId>/…` or `.memory/…`), or an absolute
+ * path that happens to live inside the sandbox — and normalize them all to sandbox-relative.
+ */
 function scoped(root: string, requested: string): string | undefined {
-	const abs = resolve(root, requested);
+	const sid = basename(root);
+	let abs: string;
+	if (isAbsolute(requested)) {
+		abs = resolve(requested);
+	} else {
+		// Drop leading "." and the ".memory"/"<sessionId>" segments the prompt advertises, so
+		// "auth.md", ".memory/auth.md", ".memory/<sessionId>/auth.md", "<sessionId>/auth.md" all land
+		// at the same sandbox-relative file.
+		const segs = requested.split("/").filter((s) => s.length > 0 && s !== ".");
+		while (segs.length > 0 && (segs[0] === ".memory" || segs[0] === sid)) segs.shift();
+		abs = resolve(root, segs.length > 0 ? segs.join("/") : ".");
+	}
 	const rel = relative(root, abs);
-	if (rel === "") return abs;
-	if (rel.startsWith("..")) return undefined;
+	if (rel === "" || rel === ".") return abs; // the sandbox root itself
+	if (isAbsolute(rel) || rel.startsWith("..")) return undefined;
 	return abs;
 }
 

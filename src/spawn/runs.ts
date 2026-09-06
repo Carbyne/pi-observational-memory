@@ -30,6 +30,15 @@ export function runResultPath(root: string, runId: string): string {
 }
 
 /**
+ * Per-run live worker console log. The orchestrator tees the worker's stdout+stderr here as the
+ * bytes arrive, so `tail -f .runs/<runId>.log` shows what a running worker is doing in real time
+ * (the worker records its own session separately, but that is only inspectable once written).
+ */
+export function runLogPath(root: string, runId: string): string {
+	return join(runsDir(root), `${runId}.log`);
+}
+
+/**
  * Worker kickoff prompt. The subprocess reads this through pi's `@file` CLI support instead
  * of receiving the potentially large transcript as one argv element (Linux caps each argument
  * at MAX_ARG_STRLEN even when ARG_MAX is much larger).

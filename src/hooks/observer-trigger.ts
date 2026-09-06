@@ -19,6 +19,7 @@ import {
 	readObserverResult,
 	readWorkerCost,
 	runCostPath,
+	runLogPath,
 	runPromptPath,
 	runResultPath,
 	writeWorkerPrompt,
@@ -124,6 +125,7 @@ async function dispatchObserver(
 
 	const { text: chunkText } = serializeSourceAddressedBranchEntries(slice.entries);
 	const lastEntry = slice.entries.at(-1);
+	const logPath = runLogPath(runtime.memoryRoot, runId);
 
 	// Start toast is fired as a batch by evaluateObserverTriggers after the dispatch
 	// loop, not here, so simultaneous starts coalesce into one multi-line notify.
@@ -160,11 +162,28 @@ async function dispatchObserver(
 			extraExtensionPaths: runtime.config.workerExtensions,
 		});
 		const env = buildWorkerEnv("observer", { memoryRoot: runtime.memoryRoot, runId });
-		const exit = await spawnWorker({ argv, cwd: runtime.memoryRoot, env, signal: controller.signal });
+		const exit = await spawnWorker({
+			argv,
+			cwd: runtime.memoryRoot,
+			env,
+			signal: controller.signal,
+			logPath,
+			timeoutMs: runtime.config.workerTimeoutMs,
+			idleTimeoutMs: runtime.config.workerIdleTimeoutMs,
+		});
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "observer", runId);
+		if (exit.timeout) {
+			throw new Error(
+				exit.timeout === "wall"
+					? `observer timed out after ${Math.round(runtime.config.workerTimeoutMs / 1000)}s (possible tool-call loop; see ${logPath})`
+					: `observer idle-timed out after ${Math.round(runtime.config.workerIdleTimeoutMs / 1000)}s with no output (stalled provider? see ${logPath})`,
+			);
+		}
 		if (exit.code !== 0) {
-			throw new Error(`observer exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""}`);
+			throw new Error(
+				`observer exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""} (log: ${logPath})`,
+			);
 		}
 
 		const result = readObserverResult(runResultPath(runtime.memoryRoot, runId));

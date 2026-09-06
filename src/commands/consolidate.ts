@@ -37,7 +37,9 @@ export function registerConsolidateCommand(pi: ExtensionAPI, runtime: Runtime): 
 			const saved = runtime.config.consolidateAtPoolTokens;
 			runtime.config.consolidateAtPoolTokens = 0;
 			try {
-				evaluateConsolidatorTrigger(pi, runtime, ctx);
+				// force:true bypasses (and clears) the circuit breaker — an operator forcing a run is an
+				// explicit retry even after the auto-trigger was blocked.
+					evaluateConsolidatorTrigger(pi, runtime, ctx, { force: true });
 			} finally {
 				runtime.config.consolidateAtPoolTokens = saved;
 			}

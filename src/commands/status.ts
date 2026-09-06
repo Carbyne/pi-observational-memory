@@ -30,7 +30,13 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  active observations: ${folded.activeObservations.length}`,
 				`  next observer: ${sinceObservation.toLocaleString()} / ${runtime.config.chunkTokens.toLocaleString()} tok`,
 				`  pool: ${pool.toLocaleString()} tok (target ${runtime.config.poolTargetTokens.toLocaleString()}, consolidate at ${runtime.config.consolidateAtPoolTokens.toLocaleString()})`,
-				`  consolidator: ${runtime.consolidatorInFlight ? "running" : "idle"}`,
+				`  consolidator: ${runtime.consolidatorInFlight
+					? "running"
+					: runtime.consolidatorBlocked
+						? `BLOCKED (${runtime.consolidatorFailures} consecutive failures; /om:consolidate to retry)`
+						: runtime.consolidatorFailures > 0
+							? `idle (${runtime.consolidatorFailures} failures; retry in ${Math.max(0, Math.ceil((runtime.consolidatorNextRetryAt - Date.now()) / 1000))}s)`
+							: "idle"}`,
 				`  last compaction wait: ${runtime.lastCompactionObserverWait ?? "n/a"}`,
 				`  topic files: ${topicCount}`,
 				`  journey: ${journey ? `~${estimateStringTokens(journey).toLocaleString()} / ${runtime.config.journeyTargetTokens.toLocaleString()} tok` : "none yet"}`,

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -71,5 +71,62 @@ describe("registerConsolidatorTools (scoped to .memory/)", () => {
 		expect(ls.content[0].text.split("\n").sort()).toEqual(["auth.md", "deploy.md"]);
 		const grep = await tools.get("grep").execute("4", { pattern: "JWT" });
 		expect(grep.content[0].text).toContain("auth.md:1");
+	});
+});
+
+describe("registerConsolidatorTools: prompt/INDEX path namespace", () => {
+	// Reproduces the production layout: the worker cwd + sandbox root is .memory/<sessionId>, but
+	// the prompt/INDEX advertises topic paths project-relative (.memory/<sessionId>/x.md). The tool
+	// belt must accept every equivalent address for the same file, so the model stops thrashing.
+	const SID = "sess-abc123";
+	let cwd: string;
+	let memoryRoot: string;
+	let tools: Map<string, any>;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "om-cons-ns-"));
+		memoryRoot = join(cwd, ".memory", SID);
+		mkdirSync(memoryRoot, { recursive: true });
+		tools = new Map();
+		registerConsolidatorTools({ registerTool: (def: any) => tools.set(def.name, def) } as any, memoryRoot);
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("reads the same file whether addressed bare, project-relative, or absolute", async () => {
+		await tools.get("write").execute("w", { path: "boot.md", content: "---\nid: boot\n---\nhello" });
+		const forms = [
+			"boot.md",
+			".memory/boot.md",
+			`.memory/${SID}/boot.md`, // the exact form renderIndexFile advertises
+			`${SID}/boot.md`,
+			join(memoryRoot, "boot.md"),
+		];
+		for (const path of forms) {
+			const r = await tools.get("read").execute("r", { path });
+			expect(r.content[0].text).toContain("hello");
+		}
+	});
+
+	it("ls resolves the advertised .memory/<sessionId> prefix to the sandbox root (not 'empty')", async () => {
+		await tools.get("write").execute("w", { path: "boot.md", content: "x" });
+		for (const path of [undefined, ".", ".memory", `.memory/${SID}`, SID]) {
+			const r = await tools.get("ls").execute("l", path === undefined ? {} : { path });
+			expect(r.content[0].text).toContain("boot.md");
+			expect(r.content[0].text).not.toContain("is empty");
+		}
+	});
+
+	it("write in the advertised namespace lands inside the sandbox", async () => {
+		await tools.get("write").execute("w", { path: `.memory/${SID}/new.md`, content: "n" });
+		expect(existsSync(join(memoryRoot, "new.md"))).toBe(true);
+	});
+
+	it("still rejects escapes even when expressed in the advertised namespace", async () => {
+		// strip-to-.memory/<sid> then .. must not smuggle an escape past the containment check
+		const r = await tools.get("read").execute("r", { path: `.memory/${SID}/../../outside.txt` });
+		expect(r.content[0].text).toMatch(/escapes|Error|no such/i);
+		expect(existsSync(join(cwd, "outside.txt"))).toBe(false);
 	});
 });

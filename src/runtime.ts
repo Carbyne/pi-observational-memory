@@ -40,6 +40,49 @@ export class Runtime {
 	consolidatorController: AbortController | undefined;
 
 	/**
+	 * Consolidator circuit breaker. `consolidatorFailures` counts consecutive failed consolidation
+	 * runs (reset on the first success or a manual `/om:consolidate`). Once it reaches
+	 * `consolidatorMaxConsecutiveFailures`, `consolidatorBlocked` latches so the pool clock stops
+	 * re-dispatching the same failing batch every tick (a broken batch otherwise hot-loops, burning
+	 * cost forever). `consolidatorNextRetryAt` paces retries below the breaker via a cooldown.
+	 */
+	consolidatorFailures = 0;
+	consolidatorBlocked = false;
+	consolidatorNextRetryAt = 0;
+
+	/** Clear the circuit breaker (successful consolidation, or an operator forcing one). */
+	resetConsolidatorBreaker(): void {
+		this.consolidatorFailures = 0;
+		this.consolidatorBlocked = false;
+		this.consolidatorNextRetryAt = 0;
+	}
+
+	/** Whether the auto pool-clock may dispatch a consolidator at `now` (breaker + cooldown). */
+	consolidatorAutoDispatchAllowed(now: number): boolean {
+		if (this.consolidatorBlocked) return false;
+		if (now < this.consolidatorNextRetryAt) return false;
+		return true;
+	}
+
+	/**
+	 * Record one failed consolidation and advance the breaker. Returns what the caller should do:
+	 * "blocked" (breaker opened — surface it), "cooldown" (paced retry armed), or "none". Kept pure
+	 * (config passed in) so the state machine is unit-testable without spawning a worker.
+	 */
+	registerConsolidatorFailure(maxConsecutive: number, cooldownMs: number): "blocked" | "cooldown" | "none" {
+		this.consolidatorFailures += 1;
+		if (maxConsecutive > 0 && this.consolidatorFailures >= maxConsecutive) {
+			this.consolidatorBlocked = true;
+			return "blocked";
+		}
+		if (cooldownMs > 0) {
+			this.consolidatorNextRetryAt = Date.now() + cooldownMs;
+			return "cooldown";
+		}
+		return "none";
+	}
+
+	/**
 	 * coversUpToId of the most-recent chunk DISPATCHED (committed or still in flight). Combined
 	 * with the committed ledger watermark, this is the effective observation watermark: it keeps
 	 * parallel observers from re-selecting the same slice and lets zero-observation chunks (which

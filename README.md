@@ -131,7 +131,11 @@ Namespace `observational-memory` in `~/.pi/agent/settings.json` (global) or
     },
     "workerExtensions": [],
     "passive": false,
-    "debugLog": false
+    "debugLog": false,
+    "workerTimeoutMs": 1200000,           // hard cap per worker run (kill + free slot); 20 min default
+    "workerIdleTimeoutMs": 0,             // no-output cap (catches a stalled provider); 0 = disabled (default)
+    "consolidatorMaxConsecutiveFailures": 3, // consecutive failed consolidations that open the breaker
+    "consolidatorRetryCooldownMs": 120000  // min interval between auto consolidation retries
   }
 }
 ```
@@ -160,6 +164,66 @@ and is concatenated into `provider/id`.
 
 `PI_OM_PASSIVE=1` forces `passive` (disables all triggers) for clean `/tree` testing.
 `passive` is a power-user setting distinct from the on/off gate.
+
+## Diagnosing stuck or looping workers
+
+When an observer or consolidator seems wedged, there are three places to look — from
+live to forensic:
+
+1. **The live worker log (real-time).** Every worker run tees its `stdout` **and** `stderr`
+   to `.memory/<sessionId>/.runs/<runId>.log` **as the bytes arrive**, so you can watch it
+   while it runs:
+
+   ```bash
+   tail -f .memory/<sessionId>/.runs/<runId>.log
+   ```
+
+   `/om:consolidate` and `/om:status` point at the in-flight run's path. A run whose
+   `.prompt.md` exists but whose `.result.json` (observers) never appears — or whose
+   `.cost.json` keeps climbing — is a model looping on tool calls, not a hung process.
+
+2. **The watchdog (auto-recovery).** `workerTimeoutMs` is a hard wall-clock cap (default **20
+   min**); it kills a run that is still producing output but never finishes (a tool-call loop).
+   `workerIdleTimeoutMs` is an opt-in no-output cap (**default `0` = disabled**, because it has
+   false-killed genuinely slow runs behind a loaded provider); set it to catch a stalled provider
+   that emits nothing. Either kill (SIGTERM→SIGKILL) records the failure as `last error` (in
+   `/om:status` and an error toast) **and frees the worker's slot / clears the consolidator flag**
+   so a wedged worker can never permanently block the pipeline. A model still producing output is
+   bounded by the wall cap only. Set `workerTimeoutMs: 0` to disable the wall cap too.
+
+3. **The recorded worker session (forensic).** Each worker is an ordinary recorded pi session
+   under the memory-root cwd bucket, so open it in the session browser to see the exact chunk
+   (as its user message), every tool call, and every reply — this is where a tool-call loop is
+   unmistakable:
+
+   ```
+   ~/.pi/agent/sessions/--<cwd-with-slashes-as---->--.memory-<sessionId>--/
+   ```
+
+> `debugLog` is a **reserved** flag: the NDJSON writer (`src/debug-log.ts`) is implemented but
+> not yet wired into the pipeline, so it currently emits nothing. The live worker log above is
+> the supported path today.
+
+> `debugLog` is a **reserved** flag: the NDJSON writer (`src/debug-log.ts`) is implemented but
+> not yet wired into the pipeline, so it currently emits nothing. The live worker log above is
+> the supported path today.
+
+### Consolidator circuit breaker
+
+A consolidation that **fails** (non-clean exit, timeout, or crash) does not drain the pool, so
+the pool clock would otherwise re-dispatch the byte-identical batch on every tick forever —
+hot-looping and burning cost on an un-drainable pool. The breaker stops that:
+
+- `consolidatorMaxConsecutiveFailures` (default **3**): consecutive failures open the breaker;
+  the auto-trigger then stops dispatching until it is reset. A successful consolidation **or** a
+  manual `/om:consolidate` (an explicit operator retry) clears it. `0` disables the breaker.
+- `consolidatorRetryCooldownMs` (default **120000**): while below the threshold, retries are
+  paced by this cooldown so a flaky batch does not hammer between attempts. `0` disables pacing.
+
+`/om:status` surfaces it: `consolidator: idle (2 failures; retry in 90s)` or
+`consolidator: BLOCKED (3 consecutive failures; /om:consolidate to retry)`. While blocked the
+pool keeps growing (compaction still works — it never waits for the consolidator); fix the cause
+(e.g. inspect the failed run's recorded worker session) then `/om:consolidate`.
 
 ## Development
 

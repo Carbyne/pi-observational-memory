@@ -56,6 +56,33 @@ export interface Config {
 	passive: boolean;
 	/** Emit the NDJSON debug log. */
 	debugLog: boolean;
+	/**
+	 * Hard wall-clock cap on one worker subprocess. On expiry the run is killed (SIGTERM then
+	 * SIGKILL), the failure is recorded, and the worker's slot / consolidator flag are freed so a
+	 * wedged worker can never permanently block the pipeline. `0` disables the hard cap.
+	 */
+	workerTimeoutMs: number;
+	/**
+	 * No-output cap on one worker subprocess: killed if it writes nothing to stdout/stderr for
+	 * this long (catches a stalled provider / hung fetch that never produced a byte). A model
+	 * spinning in a tool loop still emits output, so it is bounded by `workerTimeoutMs`, not this.
+	 * Default 0 — **disabled**, because an idle cap has false-killed genuinely slow runs behind a
+	 * loaded provider; opt in to it per setup. `0` disables the idle cap.
+	 */
+	workerIdleTimeoutMs: number;
+	/**
+	 * Consecutive failed auto-consolidations that open the consolidator circuit breaker. Once open,
+	 * the auto-trigger stops dispatching new consolidators (so a broken batch that fails every tick
+	 * can no longer hot-loop forever burning cost), and `/om:status` surfaces it. A successful
+	 * consolidation or a manual `/om:consolidate` resets it. `0` disables the breaker (re-dispatch
+	 * freely on every tick — the pre-breaker behavior).
+	 */
+	consolidatorMaxConsecutiveFailures: number;
+	/**
+	 * Minimum interval between auto-consolidation *retries* after a failure, so a consolidator that
+	 * keeps failing does not hammer the pool clock between breaker openings. `0` disables the cooldown.
+	 */
+	consolidatorRetryCooldownMs: number;
 }
 
 export const DEFAULTS: Config = {
@@ -75,6 +102,10 @@ export const DEFAULTS: Config = {
 	},
 	passive: false,
 	debugLog: false,
+	workerTimeoutMs: 20 * 60 * 1000,
+	workerIdleTimeoutMs: 0,
+	consolidatorMaxConsecutiveFailures: 3,
+	consolidatorRetryCooldownMs: 120 * 1000,
 };
 
 const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -84,6 +115,11 @@ const PASSIVE_ENV = "PI_OM_PASSIVE";
 
 function positiveIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
+}
+
+/** Like positiveIntegerOrUndefined but accepts 0 (used for the worker watchdog caps, 0 = disabled). */
+function nonNegativeIntegerOrUndefined(value: unknown): number | undefined {
+	return Number.isInteger(value) && typeof value === "number" && value >= 0 ? value : undefined;
 }
 
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
@@ -145,6 +181,15 @@ export function normalizeSettingsConfig(value: Record<string, unknown>, base: Co
 		normalized.resumeAfterMidRunCompaction = value.resumeAfterMidRunCompaction;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
+	// Worker watchdog caps: 0 is a valid value meaning "disabled", so accept any non-negative int.
+	const workerTimeoutMs = nonNegativeIntegerOrUndefined(value.workerTimeoutMs);
+	if (workerTimeoutMs !== undefined) normalized.workerTimeoutMs = workerTimeoutMs;
+	const workerIdleTimeoutMs = nonNegativeIntegerOrUndefined(value.workerIdleTimeoutMs);
+	if (workerIdleTimeoutMs !== undefined) normalized.workerIdleTimeoutMs = workerIdleTimeoutMs;
+	const consolidatorMaxConsecutiveFailures = nonNegativeIntegerOrUndefined(value.consolidatorMaxConsecutiveFailures);
+	if (consolidatorMaxConsecutiveFailures !== undefined) normalized.consolidatorMaxConsecutiveFailures = consolidatorMaxConsecutiveFailures;
+	const consolidatorRetryCooldownMs = nonNegativeIntegerOrUndefined(value.consolidatorRetryCooldownMs);
+	if (consolidatorRetryCooldownMs !== undefined) normalized.consolidatorRetryCooldownMs = consolidatorRetryCooldownMs;
 	if (Array.isArray(value.workerExtensions)) {
 		normalized.workerExtensions = value.workerExtensions
 			.filter((p): p is string => typeof p === "string" && p.length > 0)

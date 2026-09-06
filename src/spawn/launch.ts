@@ -7,7 +7,7 @@
  * project path in `~/.pi/agent/sessions` and is openable in the session browser.
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, realpathSync } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { ConfiguredModel } from "../config.js";
@@ -73,43 +73,141 @@ export function buildWorkerArgv(opts: {
 	return [pi.command, ...args];
 }
 
-export type WorkerExit = { code: number | null; signal: NodeJS.Signals | null; stderr: string };
+export type WorkerExit = {
+	code: number | null;
+	signal: NodeJS.Signals | null;
+	stderr: string;
+	/** Why the watchdog killed the run (undefined when the worker exited on its own). */
+	timeout?: "wall" | "idle";
+};
 
 /**
- * Spawn a headless worker; resolve when it exits. Workers run in their master session's
- * `.memory/<sessionId>/` root (not the project cwd) so pi keys the run into a distinct global
- * session bucket and it never clutters the project's `/resume` picker. The root is ensured to
- * exist before spawn — `spawn()` would ENOENT otherwise (the memory root is created lazily on
- * first durable write when there is no parent to seed).
+ * Spawn a headless worker; resolve when it exits (or when the watchdog kills it). Workers run in
+ * their master session's `.memory/<sessionId>/` root (not the project cwd) so pi keys the run into
+ * a distinct global session bucket and it never clutters the project's `/resume` picker. The root
+ * is ensured to exist before spawn — `spawn()` would ENOENT otherwise (the memory root is created
+ * lazily on first durable write when there is no parent to seed).
+ *
+ * Observability + liveness:
+ *   - When `logPath` is set, the worker's stdout AND stderr are teed to it as the bytes arrive, so
+ *     `tail -f <logPath>` shows a running worker in real time (previously stdout was discarded and
+ *     stderr only returned at exit — a stuck worker was a black box).
+ *   - `timeoutMs` is a hard wall-clock cap; `idleTimeoutMs` kills a run that produced no output for
+ *     that long (a stalled provider). Either fires a SIGTERM then SIGKILL and resolves with a
+ *     `timeout` reason so the caller frees the worker's slot / consolidator flag instead of the
+ *     pipeline wedging forever on a hung run.
  */
 export function spawnWorker(opts: {
 	argv: string[];
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	signal?: AbortSignal;
+	logPath?: string;
+	timeoutMs?: number;
+	idleTimeoutMs?: number;
 }): Promise<WorkerExit> {
 	const [command, ...rest] = opts.argv;
 	mkdirSync(opts.cwd, { recursive: true });
+	// Truncate/seed the live log up front so a `tail -f` that races the spawn still attaches, and
+	// so a stale file from a reused runId never mixes runs. A failed seed disables the live view for
+	// this run (logging must never affect the worker's behavior).
+	let logPath = opts.logPath;
+	if (logPath) {
+		try {
+			mkdirSync(dirname(logPath), { recursive: true });
+			writeFileSync(logPath, `# om worker ${command} ${rest.join(" ")}\n`, "utf-8");
+		} catch {
+			logPath = undefined;
+		}
+	}
 	return new Promise<WorkerExit>((resolvePromise) => {
 		const proc = spawn(command, rest, {
 			cwd: opts.cwd,
 			env: opts.env,
-			stdio: ["ignore", "ignore", "pipe"],
+			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stderr = "";
-		proc.stderr?.on("data", (d: Buffer) => {
-			stderr += d.toString();
-		});
-		proc.on("error", () => resolvePromise({ code: 1, signal: null, stderr: stderr || "spawn error" }));
-		proc.on("close", (code, signal) => resolvePromise({ code, signal, stderr }));
+		let settled = false;
+		let timeoutReason: WorkerExit["timeout"];
+
+		const tee = (stream: "stdout" | "stderr") => (d: Buffer): void => {
+			const text = d.toString();
+			if (stream === "stderr") stderr += text;
+			if (logPath) {
+				try {
+					appendFileSync(logPath, text, "utf-8");
+				} catch {
+					// best-effort live log
+				}
+			}
+			resetIdle();
+		};
+		proc.stdout?.on("data", tee("stdout"));
+		proc.stderr?.on("data", tee("stderr"));
+
+		const finish = (result: WorkerExit): void => {
+			if (settled) return;
+			settled = true;
+			clearHard();
+			clearIdle();
+			if (logPath && result.timeout) {
+				try {
+					appendFileSync(
+						logPath,
+						`\n# om watchdog: killed (${result.timeout === "wall" ? "hard timeout" : "idle timeout"})\n`,
+						"utf-8",
+					);
+				} catch {
+					// ignore
+				}
+			}
+			resolvePromise(result);
+		};
+
+		const kill = (): void => {
+			proc.kill("SIGTERM");
+			setTimeout(() => {
+				if (!proc.killed) proc.kill("SIGKILL");
+			}, 3000).unref?.();
+		};
+
+		// Hard wall-clock cap (catches a run that keeps producing output but never finishes — a
+		// model spinning in a tool loop).
+		let hardTimer: ReturnType<typeof setTimeout> | undefined;
+		const clearHard = (): void => {
+			if (hardTimer !== undefined) clearTimeout(hardTimer);
+		};
+		if (opts.timeoutMs && opts.timeoutMs > 0) {
+			hardTimer = setTimeout(() => {
+				timeoutReason = "wall";
+				kill();
+			}, opts.timeoutMs);
+			hardTimer.unref?.();
+		}
+
+		// Idle cap (catches a stalled provider / hung fetch: no bytes at all). Reset on every chunk.
+		let idleTimer: ReturnType<typeof setTimeout> | undefined;
+		const clearIdle = (): void => {
+			if (idleTimer !== undefined) clearTimeout(idleTimer);
+		};
+		const armIdle = (): void => {
+			if (!opts.idleTimeoutMs || opts.idleTimeoutMs <= 0) return;
+			clearIdle();
+			idleTimer = setTimeout(() => {
+				timeoutReason = "idle";
+				kill();
+			}, opts.idleTimeoutMs);
+			idleTimer.unref?.();
+		};
+		const resetIdle = (): void => armIdle();
+		armIdle();
+
+		proc.on("error", () => finish({ code: 1, signal: null, stderr: stderr || "spawn error" }));
+		proc.on("close", (code, signal) =>
+			finish({ code, signal, stderr, timeout: timeoutReason }),
+		);
 
 		if (opts.signal) {
-			const kill = () => {
-				proc.kill("SIGTERM");
-				setTimeout(() => {
-					if (!proc.killed) proc.kill("SIGKILL");
-				}, 3000).unref?.();
-			};
 			if (opts.signal.aborted) kill();
 			else opts.signal.addEventListener("abort", kill, { once: true });
 		}

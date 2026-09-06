@@ -32,7 +32,7 @@ import { renderIndexFile } from "../memory/index-render.js";
 import { atomicWrite, indexPath, listTopics, readJourney } from "../memory/paths.js";
 import type { Runtime } from "../runtime.js";
 import { buildWorkerArgv, buildWorkerEnv, spawnWorker } from "../spawn/launch.js";
-import { runPromptPath, writeWorkerPrompt } from "../spawn/runs.js";
+import { runPromptPath, runLogPath, writeWorkerPrompt } from "../spawn/runs.js";
 import { recordWorkerCost } from "./observer-trigger.js";
 
 type TriggerCtx = {
@@ -79,9 +79,18 @@ function buildConsolidatorPrompt(memoryRoot: string, promote: Observation[], jou
 	);
 }
 
-export function evaluateConsolidatorTrigger(pi: ExtensionAPI, runtime: Runtime, ctx: TriggerCtx): void {
+export function evaluateConsolidatorTrigger(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: TriggerCtx,
+	opts?: { force?: boolean },
+): void {
 	if (!runtime.enabled || runtime.config.passive) return;
 	if (runtime.consolidatorInFlight) return;
+
+	const force = opts?.force ?? false;
+	if (force) runtime.resetConsolidatorBreaker();
+	else if (!runtime.consolidatorAutoDispatchAllowed(Date.now())) return; // breaker open or in cooldown
 
 	const branch = ctx.sessionManager.getBranch();
 	const active = foldLedger(branch).activeObservations;
@@ -109,6 +118,8 @@ async function dispatchConsolidator(
 	const controller = new AbortController();
 	runtime.consolidatorController = controller;
 	runtime.status.workerStart("consolidator", runId);
+	const logPath = runLogPath(runtime.memoryRoot, runId);
+	if (ctx.hasUI) ctx.ui?.notify(`om: tail consolidator: tail -f ${logPath}`, "info");
 
 	try {
 		const prompt = buildConsolidatorPrompt(runtime.memoryRoot, promote, runtime.config.journeyTargetTokens);
@@ -121,11 +132,28 @@ async function dispatchConsolidator(
 			extraExtensionPaths: runtime.config.workerExtensions,
 		});
 		const env = buildWorkerEnv("consolidator", { memoryRoot: runtime.memoryRoot, runId });
-		const exit = await spawnWorker({ argv, cwd: runtime.memoryRoot, env, signal: controller.signal });
+		const exit = await spawnWorker({
+			argv,
+			cwd: runtime.memoryRoot,
+			env,
+			signal: controller.signal,
+			logPath,
+			timeoutMs: runtime.config.workerTimeoutMs,
+			idleTimeoutMs: runtime.config.workerIdleTimeoutMs,
+		});
 		// Capture cost before the exit-code check so a partial run's spend is still recorded.
 		recordWorkerCost(pi, runtime, ctx, "consolidator", runId);
+		if (exit.timeout) {
+			throw new Error(
+				exit.timeout === "wall"
+					? `consolidator timed out after ${Math.round(runtime.config.workerTimeoutMs / 1000)}s (possible tool-call loop; see ${logPath})`
+					: `consolidator idle-timed out after ${Math.round(runtime.config.workerIdleTimeoutMs / 1000)}s with no output (stalled provider? see ${logPath})`,
+			);
+		}
 		if (exit.code !== 0) {
-			throw new Error(`consolidator exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""}`);
+			throw new Error(
+				`consolidator exited with code ${exit.code}${exit.stderr ? `: ${exit.stderr.trim().slice(0, 200)}` : ""} (log: ${logPath})`,
+			);
 		}
 
 		// Trust the consolidator: on clean exit it has folded (or discarded) everything we handed it.
@@ -146,6 +174,8 @@ async function dispatchConsolidator(
 		atomicWrite(indexPath(runtime.memoryRoot), renderIndexFile(listTopics(runtime.memoryRoot)));
 
 		runtime.status.workerDone(runId, toDrop.length);
+		// A clean consolidation clears the circuit breaker: the pipeline is healthy again.
+		runtime.resetConsolidatorBreaker();
 		runtime.refreshFooterGauges(ctx.sessionManager.getBranch(), ctx.getContextUsage?.()?.tokens ?? null);
 		if (ctx.hasUI && ctx.ui) {
 			runtime.queueToast(`om: consolidator promoted ${toDrop.length} obs`, "info", ctx.ui.notify.bind(ctx.ui));
@@ -155,6 +185,18 @@ async function dispatchConsolidator(
 		runtime.lastWorkerError = message;
 		runtime.status.workerError(runId);
 		if (ctx.hasUI) ctx.ui?.notify(`om: consolidator failed: ${message}`, "error");
+		// Count the failure and advance the breaker. Without this a batch that fails every tick
+		// re-dispatches forever, burning cost on an un-drainable pool.
+		const outcome = runtime.registerConsolidatorFailure(
+			runtime.config.consolidatorMaxConsecutiveFailures,
+			runtime.config.consolidatorRetryCooldownMs,
+		);
+		if (outcome === "blocked" && ctx.hasUI) {
+			ctx.ui?.notify(
+				`om: consolidator blocked after ${runtime.consolidatorFailures} consecutive failures — auto-consolidation paused; fix the cause then /om:consolidate to retry`,
+				"warning",
+			);
+		}
 	} finally {
 		runtime.consolidatorController = undefined;
 		runtime.consolidatorInFlight = false;
